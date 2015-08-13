@@ -1,0 +1,85 @@
+--
+--Testing cms_topn_union function of the extension
+--
+--check cases with null
+SELECT cms_topn_union(NULL, NULL);
+ cms_topn_union 
+----------------
+ 
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(1),4), NULL), NULL::integer);
+ item | frequency 
+------+-----------
+    4 |         1
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(NULL, cms_topn_add(cms_topn(2),'cms_topn'::text)), NULL::text);
+   item   | frequency 
+----------+-----------
+ cms_topn |         1
+(1 row)
+
+--check cases with empty cms_topn
+SELECT * FROM topn(cms_topn_union(cms_topn(1), cms_topn(1)), NULL::integer);
+ERROR:  there is not any items in the cms_topn
+SELECT * FROM topn(cms_topn_union(cms_topn(3), cms_topn_add(cms_topn(3),'cms_topn'::text)), NULL::text);
+   item   | frequency 
+----------+-----------
+ cms_topn |         1
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(2),4), cms_topn(2)), NULL::integer);
+ item | frequency 
+------+-----------
+    4 |         1
+(1 row)
+
+--check if parameters of the cms_topns are not the same
+SELECT cms_topn_union(cms_topn(2), cms_topn(1));
+ERROR:  cannot merge cms_topns with different parameters
+SELECT cms_topn_union(cms_topn(1, 0.1, 0.9), cms_topn(1, 0.1, 0.8));
+ERROR:  cannot merge cms_topns with different parameters
+SELECT cms_topn_union(cms_topn(1, 0.1, 0.99), cms_topn(1, 0.01, 0.99));
+ERROR:  cannot merge cms_topns with different parameters
+SELECT cms_topn_union(cms_topn_add(cms_topn(2), 2), cms_topn_add(cms_topn(2), '2'::text));
+ERROR:  cannot merge cms_topns of different types
+--check normal cases
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(1),2), cms_topn_add(cms_topn(1),3)), NULL::integer);
+ item | frequency 
+------+-----------
+    2 |         1
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(1),2), cms_topn_add(cms_topn(1),2)), NULL::integer);
+ item | frequency 
+------+-----------
+    2 |         2
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(2),'two'::text), cms_topn_add(cms_topn(2),'three'::text)), NULL::text);
+ item  | frequency 
+-------+-----------
+ two   |         1
+ three |         1
+(2 rows)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(2),'two'::text), cms_topn_add(cms_topn(2),'two'::text)), NULL::text);
+ item | frequency 
+------+-----------
+ two  |         2
+(1 row)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(3),'2'::text), cms_topn_add(cms_topn(3),'3'::text)), NULL::text);
+ item | frequency 
+------+-----------
+ 2    |         1
+ 3    |         1
+(2 rows)
+
+SELECT * FROM topn(cms_topn_union(cms_topn_add(cms_topn(3),'2'::text), cms_topn_add(cms_topn(3),'2'::text)), NULL::text);
+ item | frequency 
+------+-----------
+ 2    |         2
+(1 row)
+

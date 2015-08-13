@@ -1,0 +1,130 @@
+--
+--Testing cms_topn_add function of the extension 
+--
+--check null cms_topn
+SELECT cms_topn_add(NULL, 5);
+ cms_topn_add 
+--------------
+ 
+(1 row)
+
+--check null new item for different type of elements
+CREATE TABLE add_test (
+	cms_topn_column cms_topn
+);
+--fixed size type like integer
+INSERT INTO add_test VALUES(cms_topn(3));
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::integer);
+SELECT cms_topn_info(cms_topn_column) FROM add_test;
+                                  cms_topn_info                                   
+----------------------------------------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
+(1 row)
+
+--variable length type like text
+DELETE FROM add_test;
+INSERT INTO add_test VALUES(cms_topn(3));
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
+SELECT cms_topn_info(cms_topn_column) FROM add_test;
+                                  cms_topn_info                                   
+----------------------------------------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
+(1 row)
+
+--check type consistency
+DELETE FROM add_test;
+INSERT INTO add_test VALUES(cms_topn(2));
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 3);
+ERROR:  not proper type for this cms_topn
+--check normal insertion
+--for fixed size type like big integer
+DELETE FROM add_test;
+INSERT INTO add_test VALUES(cms_topn(2));
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 0::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::bigint);
+SELECT topn(cms_topn_column, NULL::bigint) from add_test;
+ topn  
+-------
+ (0,1)
+(1 row)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
+SELECT topn(cms_topn_column, NULL::bigint) from add_test;
+         topn         
+----------------------
+ (5341434213434443,3)
+ (0,1)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
+SELECT topn(cms_topn_column, NULL::bigint) from add_test;
+         topn         
+----------------------
+ (-8,4)
+ (5341434213434443,3)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
+SELECT topn(cms_topn_column, NULL::bigint) from add_test;
+          topn          
+------------------------
+ (-42184342348342834,5)
+ (-8,4)
+(2 rows)
+
+SELECT cms_topn_info(cms_topn_column) from add_test;
+                                   cms_topn_info                                   
+-----------------------------------------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Number of inserted items = 13, Size = 63kB
+(1 row)
+
+--for variable length type like text
+DELETE FROM add_test;
+INSERT INTO add_test VALUES(cms_topn(2));
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
+SELECT topn(cms_topn_column, NULL::text) from add_test;
+   topn    
+-----------
+ (hello,3)
+(1 row)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'world'::text);
+SELECT topn(cms_topn_column, NULL::text) from add_test;
+   topn    
+-----------
+ (hello,3)
+ (world,1)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
+SELECT topn(cms_topn_column, NULL::text) from add_test;
+   topn    
+-----------
+ (hello,3)
+ (world,1)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
+SELECT topn(cms_topn_column, NULL::text) from add_test;
+     topn     
+--------------
+ (cms_topn,4)
+ (hello,3)
+(2 rows)
+
