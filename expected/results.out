@@ -59,25 +59,25 @@ SELECT cms_topn_info(cms_topn_add(cms_topn(2, 0.1, 0.9), '5'::text));
 SELECT cms_topn_frequency(NULL, NULL::text);
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 
 SELECT cms_topn_frequency(NULL, 3::integer);
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_add(cms_topn(1),5), NULL::text);
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn(3), NULL::bigint);
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 
 --check normal cases
@@ -130,7 +130,7 @@ SELECT cms_topn_frequency(cms_topn_column, -1) FROM results;
 SELECT cms_topn_frequency(cms_topn_column, NULL::integer) FROM results;
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 
 DELETE FROM results;
@@ -180,6 +180,6 @@ SELECT cms_topn_frequency(cms_topn_column, '6'::text) FROM results;
 SELECT cms_topn_frequency(cms_topn_column, NULL::text) FROM results;
  cms_topn_frequency 
 --------------------
-                  0
+                   
 (1 row)
 

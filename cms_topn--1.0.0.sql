@@ -61,7 +61,7 @@ CREATE AGGREGATE cms_topn_add_agg(anyelement, integer, double precision, double 
 CREATE FUNCTION cms_topn_frequency(cms_topn, anyelement)
 	RETURNS bigint
 	AS 'MODULE_PATHNAME'
-	LANGUAGE C IMMUTABLE;
+	LANGUAGE C STRICT IMMUTABLE;
 
 CREATE FUNCTION cms_topn_union(cms_topn, cms_topn)
 	RETURNS cms_topn
@@ -86,7 +86,7 @@ CREATE AGGREGATE cms_topn_union_agg(cms_topn )(
 CREATE FUNCTION cms_topn_info(cms_topn)
 	RETURNS text
 	AS 'MODULE_PATHNAME'
-	LANGUAGE C IMMUTABLE STRICT;
+	LANGUAGE C STRICT IMMUTABLE;
 
 CREATE OR REPLACE FUNCTION topn(cms_topn, anyelement) 
     RETURNS TABLE(item anyelement, frequency bigint)
