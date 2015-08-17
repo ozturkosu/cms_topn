@@ -31,10 +31,10 @@ ERROR:  invalid parameters for cms_topn
 HINT:  Number of top items has to be positive
 SELECT cms_topn_add_agg(int_column, 1, 2, 0.9) FROM numbers;
 ERROR:  invalid parameters for cms_topn
-HINT:  Epsilon has to be between 0 and 1
+HINT:  Error bound has to be between 0 and 1
 SELECT cms_topn_add_agg(int_column, 3, 0.2, 1.5) FROM numbers;
 ERROR:  invalid parameters for cms_topn
-HINT:  Probability has to be between 0 and 1
+HINT:  Confidence interval has to be between 0 and 1
 --check aggregates for fixed size types like integer with default parameters
 SELECT topn(cms_topn_add_agg(int_column, 3), NULL::integer) FROM numbers WHERE int_column < 0;
  topn 
@@ -96,9 +96,9 @@ SELECT topn(cms_topn_add_agg(int_column, 3), NULL::integer) FROM numbers;
 (3 rows)
 
 SELECT cms_topn_info(cms_topn_add_agg(int_column, 3)) FROM numbers;
-                                     cms_topn_info                                     
----------------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 463630, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 --check aggregates for variable length types like text
@@ -166,8 +166,8 @@ SELECT topn(cms_topn_add_agg(text_column, 4, 0.01, 0.09), NULL::text) FROM strin
 (4 rows)
 
 SELECT cms_topn_info(cms_topn_add_agg(text_column, 4)) FROM strings;
-                                     cms_topn_info                                     
----------------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 850263, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 

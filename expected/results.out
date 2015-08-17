@@ -24,34 +24,34 @@ SELECT cms_topn_info(NULL);
 (1 row)
 
 SELECT cms_topn_info(cms_topn(1));
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn(2, 0.01, 0.99));
-                                  cms_topn_info                                  
----------------------------------------------------------------------------------
- Sketch depth = 5, Sketch width = 272, Number of inserted items = 0, Size = 10kB
+                   cms_topn_info                   
+---------------------------------------------------
+ Sketch depth = 5, Sketch width = 272, Size = 10kB
 (1 row)
 
 --check normal cases
 SELECT cms_topn_info(cms_topn_add(cms_topn(1), 5));
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 1, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn_add(cms_topn(2), 5));
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 1, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn_add(cms_topn(2, 0.1, 0.9), '5'::text));
-                                 cms_topn_info                                 
--------------------------------------------------------------------------------
- Sketch depth = 3, Sketch width = 28, Number of inserted items = 1, Size = 0kB
+                  cms_topn_info                  
+-------------------------------------------------
+ Sketch depth = 3, Sketch width = 28, Size = 0kB
 (1 row)
 
 --cms_topn_frequency

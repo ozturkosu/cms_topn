@@ -8,16 +8,16 @@ ERROR:  invalid parameters for cms_topn
 HINT:  Number of top items has to be positive
 SELECT cms_topn(1, -0.1, 0.9);
 ERROR:  invalid parameters for cms_topn
-HINT:  Epsilon has to be between 0 and 1
+HINT:  Error bound has to be between 0 and 1
 SELECT cms_topn(-1, 0.1, 0.9);
 ERROR:  invalid parameters for cms_topn
 HINT:  Number of top items has to be positive
 SELECT cms_topn(3, 0.1, -0.5);
 ERROR:  invalid parameters for cms_topn
-HINT:  Probability has to be between 0 and 1
+HINT:  Confidence interval has to be between 0 and 1
 SELECT cms_topn(4, 0.02, 1.1);
 ERROR:  invalid parameters for cms_topn
-HINT:  Probability has to be between 0 and 1
+HINT:  Confidence interval has to be between 0 and 1
 --check proper parameters
 CREATE TABLE create_test (
 	cms_topn_column cms_topn
@@ -25,9 +25,9 @@ CREATE TABLE create_test (
 INSERT INTO create_test values(cms_topn(10));
 INSERT INTO create_test values(cms_topn(5, 0.01, 0.95));
 SELECT cms_topn_info(cms_topn_column) from create_test;
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
- Sketch depth = 3, Sketch width = 272, Number of inserted items = 0, Size = 6kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
+ Sketch depth = 3, Sketch width = 272, Size = 6kB
 (2 rows)
 

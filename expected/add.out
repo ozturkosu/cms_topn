@@ -16,9 +16,9 @@ CREATE TABLE add_test (
 INSERT INTO add_test VALUES(cms_topn(3));
 UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::integer);
 SELECT cms_topn_info(cms_topn_column) FROM add_test;
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 --variable length type like text
@@ -26,9 +26,9 @@ DELETE FROM add_test;
 INSERT INTO add_test VALUES(cms_topn(3));
 UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
 SELECT cms_topn_info(cms_topn_column) FROM add_test;
-                                  cms_topn_info                                   
-----------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 0, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 --check type consistency
@@ -83,9 +83,9 @@ SELECT topn(cms_topn_column, NULL::bigint) from add_test;
 (2 rows)
 
 SELECT cms_topn_info(cms_topn_column) from add_test;
-                                   cms_topn_info                                   
------------------------------------------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Number of inserted items = 13, Size = 63kB
+                   cms_topn_info                    
+----------------------------------------------------
+ Sketch depth = 6, Sketch width = 1360, Size = 63kB
 (1 row)
 
 --for variable length type like text
