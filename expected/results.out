@@ -24,9 +24,9 @@ SELECT cms_topn_info(NULL);
 (1 row)
 
 SELECT cms_topn_info(cms_topn(1));
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn(2, 0.01, 0.99));
@@ -37,15 +37,15 @@ SELECT cms_topn_info(cms_topn(2, 0.01, 0.99));
 
 --check normal cases
 SELECT cms_topn_info(cms_topn_add(cms_topn(1), 5));
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn_add(cms_topn(2), 5));
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
 SELECT cms_topn_info(cms_topn_add(cms_topn(2, 0.1, 0.9), '5'::text));

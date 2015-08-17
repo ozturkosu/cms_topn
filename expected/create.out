@@ -25,9 +25,9 @@ CREATE TABLE create_test (
 INSERT INTO create_test values(cms_topn(10));
 INSERT INTO create_test values(cms_topn(5, 0.01, 0.95));
 SELECT cms_topn_info(cms_topn_column) from create_test;
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
  Sketch depth = 3, Sketch width = 272, Size = 6kB
 (2 rows)
 

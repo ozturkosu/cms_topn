@@ -96,9 +96,9 @@ SELECT topn(cms_topn_add_agg(int_column, 3), NULL::integer) FROM numbers;
 (3 rows)
 
 SELECT cms_topn_info(cms_topn_add_agg(int_column, 3)) FROM numbers;
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
 --check aggregates for variable length types like text
@@ -166,8 +166,8 @@ SELECT topn(cms_topn_add_agg(text_column, 4, 0.01, 0.09), NULL::text) FROM strin
 (4 rows)
 
 SELECT cms_topn_info(cms_topn_add_agg(text_column, 4)) FROM strings;
-                   cms_topn_info                    
-----------------------------------------------------
- Sketch depth = 6, Sketch width = 1360, Size = 63kB
+                    cms_topn_info                    
+-----------------------------------------------------
+ Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
