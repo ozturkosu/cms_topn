@@ -20,9 +20,13 @@
 #define DEFAULT_CONFIDENCE_INTERVAL 0.99
 #define MURMUR_SEED 304837963
 #define MAX_FREQUENCY ULONG_MAX;
-#define DatumPointer(datum, byVal)  (byVal ? (void *)&datum : DatumGetPointer(datum))
 
 
+/*
+ * Frequency can be set to different types to specify limit and size of the
+ * counters. if we change type of Frequency, we also need to update MAX_FREQUENCY
+ * above.
+ */
 typedef uint64 Frequency;
 
 /*
@@ -30,7 +34,7 @@ typedef uint64 Frequency;
  * has two variable length fields. First one is for keeping the sketch which is
  * pointed by "sketch" of the struct and other is for keeping the most frequent
  * n items. It is not possible to point this by adding another field to the struct
- * so we are using pointer arithmetic to reach and handle with these items.
+ * so we are using pointer arithmetic to reach and handle these items.
  */
 typedef struct CmsTopn
 {
@@ -377,14 +381,18 @@ CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem)
 	/* make sure the datum is not toasted */
 	if (newItemTypeCacheEntry->typlen == -1)
 	{
-		newItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
+		Datum detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
+
+		newItemFrequency = InsertItemToCountMinSketch(cmsTopn, detoastedItem,
+													  newItemType);
+		newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, detoastedItem,
+											 newItemFrequency);
 	}
-
-	/* add new item to count min sketch and get new frequency of item */
-	newItemFrequency = InsertItemToCountMinSketch(cmsTopn, newItem, newItemType);
-
-	/* update the top n array of cmsTopn */
-	newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, newItem, newItemFrequency);
+	else
+	{
+		newItemFrequency = InsertItemToCountMinSketch(cmsTopn, newItem, newItemType);
+		newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, newItem, newItemFrequency);
+	}
 
 	return newTopnArray;
 }
@@ -400,8 +408,8 @@ InsertItemToCountMinSketch(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	uint32 hashIndex = 0;
 	uint64 hashValueArray[2] = {0, 0};
 	StringInfo newItemString = makeStringInfo();
-	Frequency minFrequency = MAX_FREQUENCY;
 	Frequency newFrequency = 0;
+	Frequency minFrequency = MAX_FREQUENCY;
 
 	DatumToBytes(newItem, newItemType, newItemString);
 	MurmurHash3_x64_128(newItemString->data, newItemString->len, MURMUR_SEED,
@@ -573,7 +581,6 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn, ArrayType *topnArray
 	Datum topnItem = 0;
 	ArrayIterator topnIterator = NULL;
 	Size sketchSize = 0;
-	uint64 hashValueArray[2] = {0, 0};
 	bool isNull = false;
 	bool hasMoreItem = false;
 
@@ -589,14 +596,10 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn, ArrayType *topnArray
 	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
 	while (hasMoreItem)
 	{
-		StringInfo topnItemString = makeStringInfo();
 		Frequency newItemFrequency = 0;
 
-		DatumToBytes(topnItem, secondTopnArray->elemtype, topnItemString);
-		MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
-							MURMUR_SEED, &hashValueArray);
-		newItemFrequency = CmsTopnEstimateHashedItemFrequency(firstCmsTopn,
-														   hashValueArray);
+		newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
+														secondTopnArray->elemtype);
 		newTopnArray = InsertItemToTopnArray(firstCmsTopn, newTopnArray, topnItem,
 							  	  	  	  	 newItemFrequency);
 		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
@@ -607,11 +610,11 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn, ArrayType *topnArray
 
 
 /*
- * InsertItemToTopn is helper function for the unions and inserts.
- * It takes new item and its frequency. If the item is not in the top n
- * structure, it tries to insert new item. If there is place in the top n array, it
- * insert directly. Otherwise, it compares its frequency with minimum of old
- * frequent items and updates if new frequency is bigger.
+ * InsertItemToTopnArray is a helper function for the unions and inserts. It takes
+ * given item and its frequency. If the item is not in the top n array, it tries
+ * to insert new item. If there is place in the top n array, it insert directly.
+ * Otherwise, it compares its frequency with minimum of current items in the array
+ * and updates top n array if new frequency is bigger.
  */
 static ArrayType *
 InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Frequency itemFrequency)
@@ -623,7 +626,7 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Freque
 	int16 itemTypeLength = itemTypeCacheEntry->typlen;
 	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
 	char itemTypeAlignment = itemTypeCacheEntry->typalign;
-	uint32 topnItemCount = TopnArraySize(topnArray);
+	uint32 currentArraySize = TopnArraySize(topnArray);
 	Frequency minOfNewTopnItems = MAX_FREQUENCY;
 
 	/*
@@ -633,17 +636,15 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Freque
 	 */
 	if (itemFrequency <= cmsTopn->minFrequencyOfTopnItems)
 	{
-		if (topnItemCount < cmsTopn->topnItemCount)
+		if (currentArraySize < cmsTopn->topnItemCount)
 		{
-			itemIndex =  1 + topnItemCount;
+			itemIndex =  currentArraySize + 1;
 			minOfNewTopnItems = itemFrequency;
 		}
 	}
 	else
 	{
 		ArrayIterator iterator = array_create_iterator(topnArray, 0);
-		Size itemLength = datumGetSize(item, itemTypeByValue, itemTypeLength);
-		void *itemPointer = DatumPointer(item, itemTypeByValue);
 		Datum topnItem = 0;
 		int topnItemIndex = 1;
 		int minIndex = 1;
@@ -653,35 +654,21 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Freque
 		hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
 		while (hasMoreItem)
 		{
-			StringInfo topnItemString = makeStringInfo();
 			Frequency topnItemFrequency = 0;
-			Size topnItemLength = 0;
-			void *topnItemPointer = DatumPointer(topnItem, itemTypeByValue);
-			bool sameLength = false;
-			uint64 hashValueArray[2] = {0, 0};
+			bool sameDatum = false;
 
-			DatumToBytes(topnItem, itemType, topnItemString);
-			MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
-								MURMUR_SEED, &hashValueArray);
-			topnItemFrequency = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
-
+			topnItemFrequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemType);
 			if (topnItemFrequency < minOfNewTopnItems)
 			{
 				minOfNewTopnItems = topnItemFrequency;
 				minIndex = topnItemIndex;
 			}
 
-			topnItemLength = datumGetSize(topnItem, itemTypeByValue, itemTypeLength);
-			sameLength = (topnItemLength == itemLength);
-
-			if (sameLength)
+			sameDatum = datumIsEqual(topnItem, item, itemTypeByValue, itemTypeLength);
+			if (sameDatum)
 			{
-				bool sameDatum = !memcmp(topnItemPointer, itemPointer, topnItemLength);
-				if (sameDatum)
-				{
-					minIndex = -1;
-					break;
-				}
+				minIndex = -1;
+				break;
 			}
 
 			hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
@@ -689,9 +676,9 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Freque
 		}
 
 		/* if new item is not in the top n and there is place, insert the item */
-		if (minIndex != -1 && topnItemCount < cmsTopn->topnItemCount)
+		if (minIndex != -1 && currentArraySize < cmsTopn->topnItemCount)
 		{
-			minIndex = 1 + topnItemCount;
+			minIndex = currentArraySize + 1;
 			minOfNewTopnItems = Min(minOfNewTopnItems, itemFrequency);
 		}
 
@@ -835,10 +822,15 @@ CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType)
 	/* make sure the datum is not toasted */
 	if (typeCacheEntry->typlen == -1)
 	{
-		item = PointerGetDatum(PG_DETOAST_DATUM(item));
+		Datum detoastedItem =  PointerGetDatum(PG_DETOAST_DATUM(item));
+
+		DatumToBytes(detoastedItem, itemType, itemString);
+	}
+	else
+	{
+		DatumToBytes(item, itemType, itemString);
 	}
 
-	DatumToBytes(item, itemType, itemString);
 	MurmurHash3_x64_128(itemString->data, itemString->len, MURMUR_SEED, &hashValueArray);
 	count = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
 
@@ -911,42 +903,43 @@ topn(PG_FUNCTION_ARGS)
     int callCounter = 0;
     int maxCalls = 0;
 
-     if (SRF_IS_FIRSTCALL())
-     {
-        MemoryContext oldcontext = NULL;
-        Size topnArraySize = 0;
-    	uint32 topnItemCount = 0;
-        int topnIndex = 0;
+    if (SRF_IS_FIRSTCALL())
+    {
+    	MemoryContext oldcontext = NULL;
+    	Size topnArraySize = 0;
+    	uint32 currentArraySize = 0;
+    	int topnIndex = 0;
 
-        functionCallContext = SRF_FIRSTCALL_INIT();
-        oldcontext = MemoryContextSwitchTo(functionCallContext->multi_call_memory_ctx);
-        if (PG_ARGISNULL(0))
-        {
-        	PG_RETURN_NULL();
-        }
+    	functionCallContext = SRF_FIRSTCALL_INIT();
+    	oldcontext = MemoryContextSwitchTo(functionCallContext->multi_call_memory_ctx);
+    	if (PG_ARGISNULL(0))
+    	{
+    		PG_RETURN_NULL();
+    	}
 
-        cmsTopn = (CmsTopn *)  PG_GETARG_VARLENA_P(0);
-        topn = TopnArray(cmsTopn);
-        if (topn == NULL)
-        {
+    	cmsTopn = (CmsTopn *)  PG_GETARG_VARLENA_P(0);
+    	topn = TopnArray(cmsTopn);
+
+    	if (topn == NULL)
+    	{
     		elog(ERROR, "there is not any items in the cms_topn");
-        }
+    	}
 
-        if (topn->elemtype != resultTypeId)
-        {
-        	elog(ERROR, "not proper cms_topn for the result type");
-        }
+    	if (topn->elemtype != resultTypeId)
+    	{
+    		elog(ERROR, "not proper cms_topn for the result type");
+    	}
 
-        topnItemCount = TopnArraySize(topn);
-        functionCallContext->max_calls = topnItemCount;
-        topnArraySize = topnItemCount * sizeof(TopnItem);
-        orderedTopn = palloc0(topnArraySize);
-        topnIterator = array_create_iterator(topn, 0);
-		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-		while (hasMoreItem)
-		{
-			TopnItem f;
-			Oid itemType = topn->elemtype;
+    	currentArraySize = TopnArraySize(topn);
+    	functionCallContext->max_calls = currentArraySize;
+    	topnArraySize = currentArraySize * sizeof(TopnItem);
+    	orderedTopn = palloc0(topnArraySize);
+    	topnIterator = array_create_iterator(topn, 0);
+    	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+    	while (hasMoreItem)
+    	{
+    		TopnItem f;
+    		Oid itemType = topn->elemtype;
 
 			f.item = topnItem;
 			f.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemType);
@@ -956,14 +949,14 @@ topn(PG_FUNCTION_ARGS)
 		}
 
 		/* improvable part by using different sort algorithms */
-		for (topnIndex = 0; topnIndex < topnItemCount; topnIndex++)
+		for (topnIndex = 0; topnIndex < currentArraySize; topnIndex++)
 		{
 			Frequency max = orderedTopn[topnIndex].frequency;
 			TopnItem tmp;
 			int maxIndex = topnIndex;
 			int j = 0;
 
-			for (j = topnIndex + 1; j < topnItemCount; j++)
+			for (j = topnIndex + 1; j < currentArraySize; j++)
 			{
 				if(orderedTopn[j].frequency > max)
 				{
@@ -978,11 +971,11 @@ topn(PG_FUNCTION_ARGS)
 		}
 
 		functionCallContext->user_fctx = orderedTopn;
-        get_call_result_type(fcinfo, &resultTypeId, &tupleDescriptor);
+		get_call_result_type(fcinfo, &resultTypeId, &tupleDescriptor);
 
-        completeDescriptor = BlessTupleDesc(tupleDescriptor);
-        functionCallContext->tuple_desc = completeDescriptor;
-        MemoryContextSwitchTo(oldcontext);
+		completeDescriptor = BlessTupleDesc(tupleDescriptor);
+		functionCallContext->tuple_desc = completeDescriptor;
+		MemoryContextSwitchTo(oldcontext);
     }
 
     functionCallContext = SRF_PERCALL_SETUP();
@@ -993,21 +986,20 @@ topn(PG_FUNCTION_ARGS)
 
     if (callCounter < maxCalls)
     {
-        Datum       *values = (Datum *) palloc(2*sizeof(Datum));
-        HeapTuple    tuple;
-        Datum        result = 0;
-        char *nulls;
+    	Datum       *values = (Datum *) palloc(2*sizeof(Datum));
+    	HeapTuple    tuple;
+    	Datum        result = 0;
+    	char *nulls = palloc0(2*sizeof(char));
 
-        values[0] = orderedTopn[callCounter].item;
-        values[1] = orderedTopn[callCounter].frequency;
-        nulls = palloc0(2*sizeof(char));
-        tuple = heap_formtuple(completeDescriptor, values,nulls);
-        result = HeapTupleGetDatum(tuple);
-        SRF_RETURN_NEXT(functionCallContext, result);
+    	values[0] = orderedTopn[callCounter].item;
+    	values[1] = orderedTopn[callCounter].frequency;
+    	tuple = heap_formtuple(completeDescriptor, values,nulls);
+    	result = HeapTupleGetDatum(tuple);
+    	SRF_RETURN_NEXT(functionCallContext, result);
     }
     else
     {
-        SRF_RETURN_DONE(functionCallContext);
+    	SRF_RETURN_DONE(functionCallContext);
     }
 }
 
