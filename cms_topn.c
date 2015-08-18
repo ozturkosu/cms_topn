@@ -18,7 +18,7 @@
 
 #define DEFAULT_ERROR_BOUND 0.001
 #define DEFAULT_CONFIDENCE_INTERVAL 0.99
-#define MURMUR_SEED 953945395346
+#define MURMUR_SEED 304837963
 #define MAX_FREQUENCY ULONG_MAX;
 #define DatumPointer(datum, byVal)  (byVal ? (void *)&datum : DatumGetPointer(datum))
 
@@ -59,16 +59,17 @@ static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 static CmsTopn * CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType);
 static Frequency CountMinSketchAdd(CmsTopn *cmsTopn, uint64 *hashValueArray);
 static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn);
-static CmsTopn * InsertItemToTopn(TypeCacheEntry *newItemTypeCacheEntry,
-								  CmsTopn *cmsTopn, Datum elem,
-								  Frequency newItemFrequency);
+static ArrayType * InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item,
+										 Frequency itemFrequency,
+										 TypeCacheEntry *itemTypeCacheEntry);
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopn);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
 static Size CmsTopnEmptySize(CmsTopn *cmsTopn);
 static Frequency CmsTopnEstimateFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType);
 static Frequency CountMinSketchEstimateFrequency(CmsTopn *cmsTopn,
 												 uint64 *hashValueArray);
-static void DatumToBytes(Datum d, TypeCacheEntry *typ, StringInfo buf);
+static void DatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
+						 StringInfo datumString);
 
 
 /* declarations for dynamic loading */
@@ -336,6 +337,7 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 
 	totalSize = staticStructSize + sketchSize;
 	cmsTopn = palloc0(totalSize);
+
 	cmsTopn->sketchDepth = sketchDepth;
 	cmsTopn->sketchWidth = sketchWidth;
 	cmsTopn->topnItemCount = topnItemCount;
@@ -355,6 +357,7 @@ CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 {
 	StringInfo newItemString = NULL;
 	CmsTopn *newCmsTopn = NULL;
+	ArrayType *newTopnArray = NULL;
 	Frequency newItemFrequency = 0;
 	TypeCacheEntry *newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
 	uint64 hashValueArray[2] = {0, 0};
@@ -374,8 +377,9 @@ CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	newItemFrequency = CountMinSketchAdd(cmsTopn, hashValueArray);
 
 	/* update the top n array of cms_topn */
-	newCmsTopn = InsertItemToTopn(newItemTypeCacheEntry, cmsTopn, newItem,
-								  newItemFrequency);
+	newTopnArray = InsertItemToTopnArray(cmsTopn, newItem, newItemFrequency,
+									     newItemTypeCacheEntry);
+	newCmsTopn = FormCmsTopn(cmsTopn, newTopnArray);
 
 	return newCmsTopn;
 }
@@ -397,7 +401,7 @@ CountMinSketchAdd(CmsTopn *cmsTopn, uint64 *hashValueArray)
 		uint32 hashOffset = hashIndex * cmsTopn->sketchWidth;
 		uint64 hashValue = hashValueArray[0] + (hashIndex * hashValueArray[1]);
 		uint32 counterIndex = hashValue	% cmsTopn->sketchWidth;
-		Frequency counterFrequency = cmsTopn->sketch[hashOffset + counterIndex];+
+		Frequency counterFrequency = cmsTopn->sketch[hashOffset + counterIndex];
 
 		cmsTopn->sketch[hashOffset + counterIndex] = Max(counterFrequency, newFrequency);
 	}
@@ -447,7 +451,6 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 {
 	CmsTopn *cmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
-
 
 	if (!AggCheckCallContext(fcinfo, NULL))
 	{
@@ -515,6 +518,7 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 		bool hasMoreItem = false;
 		Size sketchSize = 0;
 		uint64 hashValueArray[2] = {0, 0};
+		ArrayType *newTopnArray = NULL;
 
 		if (firstTopn->elemtype != secondTopn->elemtype)
 		{
@@ -535,19 +539,20 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 		while (hasMoreItem)
 		{
 			StringInfo topnItemString = makeStringInfo();
-			Frequency newItemFrequency;
+			Frequency newItemFrequency = 0;
 
 			DatumToBytes(topnItem, newItemTypeCacheEntry, topnItemString);
 			MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
 								MURMUR_SEED, &hashValueArray);
 			newItemFrequency = CountMinSketchEstimateFrequency(firstCmsTopn,
 															   hashValueArray);
-			firstCmsTopn = InsertItemToTopn(newItemTypeCacheEntry, firstCmsTopn,
-											topnItem, newItemFrequency);
+			newTopnArray = InsertItemToTopnArray(firstCmsTopn, topnItem,
+												 newItemFrequency, newItemTypeCacheEntry);
+			firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
 			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
 		}
 
-		newCmsTopn = firstCmsTopn;
+		newCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
 	}
 
 	return newCmsTopn;
@@ -561,82 +566,85 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
  * insert directly. Otherwise, it compares its frequency with minimum of old
  * frequent items and updates if new frequency is bigger.
  */
-static CmsTopn *
-InsertItemToTopn(TypeCacheEntry *newItemTypeCacheEntry, CmsTopn *cmsTopn, Datum newItem,
-				 Frequency newItemFrequency)
+static ArrayType *
+InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item, Frequency itemFrequency, TypeCacheEntry *itemTypeCacheEntry)
 {
-	CmsTopn *newCmsTopn = NULL;
-	ArrayType *oldTopn = NULL;
-	ArrayType *newTopn = NULL;
-	int newItemIndex = -1; /* do not insert if it stays -1 */
-	Oid newItemType = newItemTypeCacheEntry->type_id;
-	int16 newItemTypeLength = newItemTypeCacheEntry->typlen;
-	bool newItemTypeByValue = newItemTypeCacheEntry->typbyval;
-	char newItemTypeAlignment = newItemTypeCacheEntry->typalign;
+	ArrayType *oldTopnArray = NULL;
+	ArrayType *newTopnArray = NULL;
+	int itemIndex = -1;
+	Oid itemType = itemTypeCacheEntry->type_id;
+	int16 itemTypeLength = itemTypeCacheEntry->typlen;
+	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
+	char itemTypeAlignment = itemTypeCacheEntry->typalign;
 	uint32 topnItemCount = 0;
-	Frequency newMinOfTopnItems = MAX_FREQUENCY;
+	Frequency minOfNewTopnItems = MAX_FREQUENCY;
 
-	/* if the new item is the first one, create the top n structure */
-	oldTopn = TopnArray(cmsTopn);
-	if (oldTopn == NULL)
+	/*
+	 * If the new item is the first one, create the top n structure, otherwise
+	 * get the old top n from cmsTopn.
+	 */
+	oldTopnArray = TopnArray(cmsTopn);
+	if (oldTopnArray == NULL)
 	{
-		oldTopn = construct_empty_array(newItemType);
+		oldTopnArray = construct_empty_array(itemType);
 	}
-	/* otherwise get the old topn from cmsTopn */
 	else
 	{
-		topnItemCount = ARR_DIMS(oldTopn)[0];
+		topnItemCount = ARR_DIMS(oldTopnArray)[0];
 	}
 
-	/* !!!improvable logic espceially for aggregates with hash and ordered array */
-	/* new item is not in the topn */
-	if (newItemFrequency <= cmsTopn->minFrequencyOfTopnItems)
+	/*
+	 * If item frequency is smaller than min frequency of old top n items,
+	 * it cannot be in the top n items and we insert it if there is place.
+	 * Otherwise, we need to check new minimum and whether it is in the top n.
+	 */
+	if (itemFrequency <= cmsTopn->minFrequencyOfTopnItems)
 	{
 		if (topnItemCount < cmsTopn->topnItemCount)
 		{
-			newItemIndex =  1 + topnItemCount;
-			newMinOfTopnItems = newItemFrequency;
+			itemIndex =  1 + topnItemCount;
+			minOfNewTopnItems = itemFrequency;
 		}
 	}
-	/* new item can be in top n, check by iterating */
 	else
 	{
-		ArrayIterator iterator = array_create_iterator(oldTopn, 0);
+		ArrayIterator iterator = array_create_iterator(oldTopnArray, 0);
+		Size itemLength = datumGetSize(item, itemTypeByValue, itemTypeLength);
+		void *itemPointer = DatumPointer(item, itemTypeByValue);
 		Datum topnItem = 0;
-		bool isNull = false;
-		uint32 datumLength = 0;
-		int minIndex = 1;
 		int topnItemIndex = 1;
-		Frequency topnItemFrequency = 0;
+		int minIndex = 1;
 		bool hasMoreItem = false;
-		bool sameLength = false;
-		uint64 hashValueArray[2] = {0, 0};
+		bool isNull = false;
 
-		/* iterate through array */
 		hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
 		while (hasMoreItem)
 		{
-			StringInfo topnItemString =  makeStringInfo();
+			StringInfo topnItemString = makeStringInfo();
+			Frequency topnItemFrequency = 0;
+			Size topnItemLength = 0;
+			void *topnItemPointer = DatumPointer(topnItem, itemTypeByValue);
+			bool sameLength = false;
+			uint64 hashValueArray[2] = {0, 0};
 
-			DatumToBytes(topnItem, newItemTypeCacheEntry, topnItemString);
+			DatumToBytes(topnItem, itemTypeCacheEntry, topnItemString);
 			MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
 								MURMUR_SEED, &hashValueArray);
 			topnItemFrequency = CountMinSketchEstimateFrequency(cmsTopn, hashValueArray);
-			if (topnItemFrequency < newMinOfTopnItems)
+
+			if (topnItemFrequency < minOfNewTopnItems)
 			{
-				newMinOfTopnItems = topnItemFrequency;
+				minOfNewTopnItems = topnItemFrequency;
 				minIndex = topnItemIndex;
 			}
 
-			datumLength = datumGetSize(topnItem, newItemTypeByValue, newItemTypeLength);
-			sameLength = (datumLength == datumGetSize(newItem, newItemTypeByValue,
-													  newItemTypeLength));
+			topnItemLength = datumGetSize(topnItem, itemTypeByValue, itemTypeLength);
+			sameLength = (topnItemLength == itemLength);
+
 			if (sameLength)
 			{
-				void *newItemPointer = DatumPointer(topnItem, newItemTypeByValue);
-				void *topnItemPointer = DatumPointer(newItem, newItemTypeByValue);
-
-				if (!memcmp(topnItemPointer, newItemPointer, datumLength))
+				bool sameDatum = !memcmp(topnItemPointer, itemPointer, topnItemLength);
+				if (sameDatum)
 				{
 					minIndex = -1;
 					break;
@@ -647,35 +655,33 @@ InsertItemToTopn(TypeCacheEntry *newItemTypeCacheEntry, CmsTopn *cmsTopn, Datum 
 			topnItemIndex++;
 		}
 
-		/* new item is not in the top n and there is place */
+		/* if new item is not in the top n and there is place, insert the item */
 		if (minIndex != -1 && topnItemCount < cmsTopn->topnItemCount)
 		{
 			minIndex = 1 + topnItemCount;
-			newMinOfTopnItems = Min(newMinOfTopnItems, newItemFrequency);
+			minOfNewTopnItems = Min(minOfNewTopnItems, itemFrequency);
 		}
 
-		newItemIndex = minIndex;
-		array_free_iterator(iterator);
+		itemIndex = minIndex;
 	}
 
 	/*
 	 * If it is not in the top n structure and its frequency bigger than minimum
-	 * put into top n instead of the item which has minimum frequency
+	 * put into top n instead of the item which has minimum frequency. If it is in
+	 * top n or not frequent items, do not change anything.
 	 */
-	if (newItemIndex != -1 && newMinOfTopnItems <= newItemFrequency)
+	if (itemIndex != -1 && minOfNewTopnItems <= itemFrequency)
 	{
-		newTopn = array_set(oldTopn, 1, &newItemIndex, newItem, false, -1,
-							newItemTypeLength, newItemTypeByValue, newItemTypeAlignment);
-		newCmsTopn = FormCmsTopn(cmsTopn, newTopn);
-		newCmsTopn->minFrequencyOfTopnItems = newMinOfTopnItems;
+		newTopnArray = array_set(oldTopnArray, 1, &itemIndex, item, false, -1,
+								 itemTypeLength, itemTypeByValue, itemTypeAlignment);
+		cmsTopn->minFrequencyOfTopnItems = minOfNewTopnItems;
 	}
-	/* if it is in top n or not frequent items, do not change anything */
 	else
 	{
-		newCmsTopn = cmsTopn;
+		newTopnArray = oldTopnArray;
 	}
 
-	return newCmsTopn;
+	return newTopnArray;
 }
 
 
