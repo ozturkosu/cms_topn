@@ -56,20 +56,20 @@ typedef struct TopnItem
 /* local functions forward declarations */
 static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 							   float8 confidenceInterval);
-static CmsTopn * CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType);
+static ArrayType * CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem);
 static Frequency CountMinSketchAdd(CmsTopn *cmsTopn, uint64 *hashValueArray);
-static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn);
-static ArrayType * InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item,
-										 Frequency itemFrequency,
-										 TypeCacheEntry *itemTypeCacheEntry);
+static ArrayType * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
+								ArrayType *topnArray);
+static ArrayType * InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray,
+										 Datum item, Frequency itemFrequency);
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopn);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
 static Size CmsTopnEmptySize(CmsTopn *cmsTopn);
 static Frequency CmsTopnEstimateFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType);
 static Frequency CountMinSketchEstimateFrequency(CmsTopn *cmsTopn,
 												 uint64 *hashValueArray);
-static void DatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
-						 StringInfo datumString);
+static void DatumToBytes(Datum datum, Oid datumType, StringInfo datumString);
+static Size TopnArraySize(ArrayType *topnArray);
 
 
 /* declarations for dynamic loading */
@@ -193,14 +193,18 @@ cms_topn_add(PG_FUNCTION_ARGS)
 	}
 
 	topnArray = TopnArray(cmsTopn);
-	/* check item type consistency, if any item is inserted before */
-	if (topnArray != NULL && newItemType != topnArray->elemtype)
+	if (topnArray == NULL)
+	{
+		topnArray = construct_empty_array(newItemType);
+	}
+	else if (newItemType != topnArray->elemtype)
 	{
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						errmsg("not proper type for this cms_topn")));
 	}
 
-	cmsTopn = CmsTopnAddItem(cmsTopn, newItem, newItemType);
+	topnArray = CmsTopnAddItem(cmsTopn, topnArray, newItem);
+	cmsTopn = FormCmsTopn(cmsTopn, topnArray);
 
 	PG_RETURN_POINTER(cmsTopn);
 }
@@ -216,6 +220,7 @@ Datum
 cms_topn_add_agg(PG_FUNCTION_ARGS)
 {
 	CmsTopn *cmsTopn = NULL;
+	ArrayType *topnArray = NULL;
 	Datum newItem = PG_GETARG_DATUM(1);
 	Oid newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
 	uint32 topnItemCount = PG_GETARG_UINT32(2);
@@ -231,10 +236,12 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(0))
 	{
 		cmsTopn = CreateCmsTopn(topnItemCount, errorBound, confidenceInterval);
+		topnArray = construct_empty_array(newItemType);
 	}
 	else
 	{
 		cmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
+		topnArray = TopnArray(cmsTopn);
 	}
 
 	/* if new item is null, return old cms_Topn */
@@ -243,7 +250,8 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(cmsTopn);
 	}
 
-	cmsTopn = CmsTopnAddItem(cmsTopn, newItem, newItemType);
+	topnArray = CmsTopnAddItem(cmsTopn, topnArray, newItem);
+	cmsTopn = FormCmsTopn(cmsTopn, topnArray);
 
 	PG_RETURN_POINTER(cmsTopn);
 }
@@ -259,6 +267,7 @@ Datum
 cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 {
 	CmsTopn *cmsTopn = NULL;
+	ArrayType *topnArray = NULL;
 	Datum newItem = PG_GETARG_DATUM(1);
 	Oid newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
 	uint32 topnItemCount = PG_GETARG_UINT32(2);
@@ -274,10 +283,12 @@ cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(0))
 	{
 		cmsTopn = CreateCmsTopn(topnItemCount, errorBound, confidenceInterval);
+		topnArray = construct_empty_array(newItemType);
 	}
 	else
 	{
 		cmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
+		topnArray = TopnArray(cmsTopn);
 	}
 
 	/* if new item is null, return old cms_Topn */
@@ -286,7 +297,8 @@ cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(cmsTopn);
 	}
 
-	cmsTopn = CmsTopnAddItem(cmsTopn, newItem, newItemType);
+	topnArray = CmsTopnAddItem(cmsTopn, topnArray, newItem);
+	cmsTopn = FormCmsTopn(cmsTopn, topnArray);
 
 	PG_RETURN_POINTER(cmsTopn);
 }
@@ -352,13 +364,13 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
  * It first adds the item to the sketch, calculates its frequency and
  * then updates the top n structure.
  */
-static CmsTopn *
-CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
+static ArrayType *
+CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem)
 {
 	StringInfo newItemString = NULL;
-	CmsTopn *newCmsTopn = NULL;
 	ArrayType *newTopnArray = NULL;
 	Frequency newItemFrequency = 0;
+	Oid newItemType = topnArray->elemtype;
 	TypeCacheEntry *newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
 	uint64 hashValueArray[2] = {0, 0};
 
@@ -369,7 +381,7 @@ CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	}
 
 	newItemString = makeStringInfo();
-	DatumToBytes(newItem, newItemTypeCacheEntry, newItemString);
+	DatumToBytes(newItem, newItemType, newItemString);
 	MurmurHash3_x64_128(newItemString->data, newItemString->len,
 						MURMUR_SEED, &hashValueArray);
 
@@ -377,11 +389,9 @@ CmsTopnAddItem(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	newItemFrequency = CountMinSketchAdd(cmsTopn, hashValueArray);
 
 	/* update the top n array of cms_topn */
-	newTopnArray = InsertItemToTopnArray(cmsTopn, newItem, newItemFrequency,
-									     newItemTypeCacheEntry);
-	newCmsTopn = FormCmsTopn(cmsTopn, newTopnArray);
+	newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, newItem, newItemFrequency);
 
-	return newCmsTopn;
+	return newTopnArray;
 }
 
 
@@ -419,6 +429,9 @@ cms_topn_union(PG_FUNCTION_ARGS)
 	CmsTopn *firstCmsTopn = NULL;
 	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
+	ArrayType *firstTopnArray = NULL;
+	ArrayType *secondTopnArray = NULL;
+	ArrayType *newTopnArray = NULL;
 
 	if (PG_ARGISNULL(0) && PG_ARGISNULL(1))
 	{
@@ -429,15 +442,44 @@ cms_topn_union(PG_FUNCTION_ARGS)
 		secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
 		PG_RETURN_POINTER(secondCmsTopn);
 	}
+	else if (PG_ARGISNULL(1))
+	{
+		firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
+		PG_RETURN_POINTER(firstCmsTopn);
+	}
 
 	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
-	if (PG_ARGISNULL(1))
+	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
+
+	if (firstCmsTopn->sketchDepth != secondCmsTopn->sketchDepth
+		|| firstCmsTopn->sketchWidth != secondCmsTopn->sketchWidth
+		|| firstCmsTopn->topnItemCount != secondCmsTopn->topnItemCount)
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 	 	errmsg("cannot merge cms_topns with different parameters")));
+	}
+
+	firstTopnArray = TopnArray(firstCmsTopn);
+	secondTopnArray = TopnArray(secondCmsTopn);
+
+	if (TopnArraySize(firstTopnArray) == 0)
+	{
+		PG_RETURN_POINTER(secondCmsTopn);
+	}
+
+	if (TopnArraySize(secondTopnArray) == 0)
 	{
 		PG_RETURN_POINTER(firstCmsTopn);
 	}
 
-	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
-	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn);
+	if (firstTopnArray->elemtype != secondTopnArray->elemtype)
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 	 	errmsg("cannot merge cms_topns of different types")));
+	}
+
+	newTopnArray = CmsTopnUnion(firstCmsTopn, secondCmsTopn, firstTopnArray);
+	newCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
 
 	PG_RETURN_POINTER(newCmsTopn);
 }
@@ -449,8 +491,12 @@ cms_topn_union(PG_FUNCTION_ARGS)
 Datum
 cms_topn_union_agg(PG_FUNCTION_ARGS)
 {
-	CmsTopn *cmsTopn = NULL;
+	CmsTopn *firstCmsTopn = NULL;
+	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
+	ArrayType *firstTopnArray = NULL;
+	ArrayType *secondTopnArray = NULL;
+	ArrayType *newTopnArray = NULL;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
 	{
@@ -463,35 +509,17 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 	}
 	else if (PG_ARGISNULL(0))
 	{
-		newCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
-		PG_RETURN_POINTER(newCmsTopn);
+		secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
+		PG_RETURN_POINTER(secondCmsTopn);
 	}
-
-	cmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
-	if (PG_ARGISNULL(1))
+	else if (PG_ARGISNULL(1))
 	{
-		PG_RETURN_POINTER(cmsTopn);
+		firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
+		PG_RETURN_POINTER(firstCmsTopn);
 	}
 
-	newCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
-	cmsTopn = CmsTopnUnion(cmsTopn, newCmsTopn);
-
-	PG_RETURN_POINTER(cmsTopn);
-}
-
-
-/*
- * CmsTopnUnion is helper function for union operations. It first sums two
- * sketchs up and iterates through the top n of the second to update the top n
- * of union.
- */
-static CmsTopn *
-CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
-{
-	ArrayType *firstTopn = TopnArray(firstCmsTopn);
-	ArrayType *secondTopn = TopnArray(secondCmsTopn);
-	CmsTopn *newCmsTopn = NULL;
-	uint32 topnItemIndex = 0;
+	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
+	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
 
 	if (firstCmsTopn->sketchDepth != secondCmsTopn->sketchDepth
 		|| firstCmsTopn->sketchWidth != secondCmsTopn->sketchWidth
@@ -501,61 +529,77 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 				 	 	errmsg("cannot merge cms_topns with different parameters")));
 	}
 
-	if (firstTopn == NULL)
+	firstTopnArray = TopnArray(firstCmsTopn);
+	secondTopnArray = TopnArray(secondCmsTopn);
+
+	if (TopnArraySize(firstTopnArray) == 0)
 	{
-		newCmsTopn = secondCmsTopn;
+		PG_RETURN_POINTER(secondCmsTopn);
 	}
-	else if (secondTopn == NULL)
+
+	if (TopnArraySize(secondTopnArray) == 0)
 	{
-		newCmsTopn = firstCmsTopn;
+		PG_RETURN_POINTER(firstCmsTopn);
 	}
-	else
+
+	if (firstTopnArray->elemtype != secondTopnArray->elemtype)
 	{
-		Datum topnItem = 0;
-		ArrayIterator topnIterator = NULL;
-		bool isNull = false;
-		TypeCacheEntry *newItemTypeCacheEntry = NULL;
-		bool hasMoreItem = false;
-		Size sketchSize = 0;
-		uint64 hashValueArray[2] = {0, 0};
-		ArrayType *newTopnArray = NULL;
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 	 	errmsg("cannot merge cms_topns of different types")));
+	}
 
-		if (firstTopn->elemtype != secondTopn->elemtype)
-		{
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 	 	errmsg("cannot merge cms_topns of different types")));
-		}
+	newTopnArray = CmsTopnUnion(firstCmsTopn, secondCmsTopn, firstTopnArray);
+	newCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
 
-		sketchSize = firstCmsTopn->sketchDepth * firstCmsTopn->sketchWidth;
-		for (topnItemIndex = 0; topnItemIndex < sketchSize; topnItemIndex++)
-		{
-			firstCmsTopn->sketch[topnItemIndex] += secondCmsTopn->sketch[topnItemIndex];
-		}
+	PG_RETURN_POINTER(newCmsTopn);
+}
 
-		newItemTypeCacheEntry = lookup_type_cache(secondTopn->elemtype, 0);
-		topnIterator = array_create_iterator(secondTopn, 0);
 
+/*
+ * CmsTopnUnion is helper function for union operations. It first sums two
+ * sketchs up and iterates through the top n of the second to update the top n
+ * of union.
+ */
+static ArrayType *
+CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn, ArrayType *topnArray)
+{
+	ArrayType *firstTopnArray = TopnArray(firstCmsTopn);
+	ArrayType *secondTopnArray = TopnArray(secondCmsTopn);
+	ArrayType *newTopnArray = NULL;
+	uint32 topnItemIndex = 0;
+	Datum topnItem = 0;
+	ArrayIterator topnIterator = NULL;
+	Size sketchSize = 0;
+	uint64 hashValueArray[2] = {0, 0};
+	bool isNull = false;
+	bool hasMoreItem = false;
+
+	sketchSize = firstCmsTopn->sketchDepth * firstCmsTopn->sketchWidth;
+	for (topnItemIndex = 0; topnItemIndex < sketchSize; topnItemIndex++)
+	{
+		firstCmsTopn->sketch[topnItemIndex] += secondCmsTopn->sketch[topnItemIndex];
+	}
+
+	topnIterator = array_create_iterator(secondTopnArray, 0);
+	newTopnArray = firstTopnArray;
+
+	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+	while (hasMoreItem)
+	{
+		StringInfo topnItemString = makeStringInfo();
+		Frequency newItemFrequency = 0;
+
+		DatumToBytes(topnItem, secondTopnArray->elemtype, topnItemString);
+		MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
+							MURMUR_SEED, &hashValueArray);
+		newItemFrequency = CountMinSketchEstimateFrequency(firstCmsTopn,
+														   hashValueArray);
+		newTopnArray = InsertItemToTopnArray(firstCmsTopn, newTopnArray, topnItem,
+							  	  	  	  	 newItemFrequency);
 		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-		while (hasMoreItem)
-		{
-			StringInfo topnItemString = makeStringInfo();
-			Frequency newItemFrequency = 0;
-
-			DatumToBytes(topnItem, newItemTypeCacheEntry, topnItemString);
-			MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
-								MURMUR_SEED, &hashValueArray);
-			newItemFrequency = CountMinSketchEstimateFrequency(firstCmsTopn,
-															   hashValueArray);
-			newTopnArray = InsertItemToTopnArray(firstCmsTopn, topnItem,
-												 newItemFrequency, newItemTypeCacheEntry);
-			firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
-			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-		}
-
-		newCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
 	}
 
-	return newCmsTopn;
+	return newTopnArray;
 }
 
 
@@ -567,31 +611,17 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
  * frequent items and updates if new frequency is bigger.
  */
 static ArrayType *
-InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item, Frequency itemFrequency, TypeCacheEntry *itemTypeCacheEntry)
+InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Frequency itemFrequency)
 {
-	ArrayType *oldTopnArray = NULL;
 	ArrayType *newTopnArray = NULL;
 	int itemIndex = -1;
-	Oid itemType = itemTypeCacheEntry->type_id;
+	Oid itemType = topnArray->elemtype;
+	TypeCacheEntry *itemTypeCacheEntry = lookup_type_cache(itemType, 0);
 	int16 itemTypeLength = itemTypeCacheEntry->typlen;
 	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
 	char itemTypeAlignment = itemTypeCacheEntry->typalign;
-	uint32 topnItemCount = 0;
+	uint32 topnItemCount = TopnArraySize(topnArray);
 	Frequency minOfNewTopnItems = MAX_FREQUENCY;
-
-	/*
-	 * If the new item is the first one, create the top n structure, otherwise
-	 * get the old top n from cmsTopn.
-	 */
-	oldTopnArray = TopnArray(cmsTopn);
-	if (oldTopnArray == NULL)
-	{
-		oldTopnArray = construct_empty_array(itemType);
-	}
-	else
-	{
-		topnItemCount = ARR_DIMS(oldTopnArray)[0];
-	}
 
 	/*
 	 * If item frequency is smaller than min frequency of old top n items,
@@ -608,7 +638,7 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item, Frequency itemFrequency, Typ
 	}
 	else
 	{
-		ArrayIterator iterator = array_create_iterator(oldTopnArray, 0);
+		ArrayIterator iterator = array_create_iterator(topnArray, 0);
 		Size itemLength = datumGetSize(item, itemTypeByValue, itemTypeLength);
 		void *itemPointer = DatumPointer(item, itemTypeByValue);
 		Datum topnItem = 0;
@@ -627,7 +657,7 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item, Frequency itemFrequency, Typ
 			bool sameLength = false;
 			uint64 hashValueArray[2] = {0, 0};
 
-			DatumToBytes(topnItem, itemTypeCacheEntry, topnItemString);
+			DatumToBytes(topnItem, itemType, topnItemString);
 			MurmurHash3_x64_128(topnItemString->data, topnItemString->len,
 								MURMUR_SEED, &hashValueArray);
 			topnItemFrequency = CountMinSketchEstimateFrequency(cmsTopn, hashValueArray);
@@ -672,16 +702,30 @@ InsertItemToTopnArray(CmsTopn *cmsTopn, Datum item, Frequency itemFrequency, Typ
 	 */
 	if (itemIndex != -1 && minOfNewTopnItems <= itemFrequency)
 	{
-		newTopnArray = array_set(oldTopnArray, 1, &itemIndex, item, false, -1,
+		newTopnArray = array_set(topnArray, 1, &itemIndex, item, false, -1,
 								 itemTypeLength, itemTypeByValue, itemTypeAlignment);
 		cmsTopn->minFrequencyOfTopnItems = minOfNewTopnItems;
 	}
 	else
 	{
-		newTopnArray = oldTopnArray;
+		newTopnArray = topnArray;
 	}
 
 	return newTopnArray;
+}
+
+
+static Size
+TopnArraySize(ArrayType *topnArray)
+{
+	if (!topnArray || topnArray->ndim == 0)
+	{
+		return 0;
+	}
+	else
+	{
+		return ARR_DIMS(topnArray)[0];
+	}
 }
 
 
@@ -790,7 +834,7 @@ CmsTopnEstimateFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType)
 		item = PointerGetDatum(PG_DETOAST_DATUM(item));
 	}
 
-	DatumToBytes(item, typeCacheEntry, itemString);
+	DatumToBytes(item, itemType, itemString);
 	MurmurHash3_x64_128(itemString->data, itemString->len, MURMUR_SEED, &hashValueArray);
 	count = CountMinSketchEstimateFrequency(cmsTopn, hashValueArray);
 
@@ -883,13 +927,12 @@ topn(PG_FUNCTION_ARGS)
     		elog(ERROR, "there is not any items in the cms_topn");
         }
 
-        topn = TopnArray(cmsTopn);
         if (topn->elemtype != resultTypeId)
         {
         	elog(ERROR, "not proper cms_topn for the result type");
         }
 
-        topnItemCount = ARR_DIMS(topn)[0];
+        topnItemCount = TopnArraySize(topn);
         functionCallContext->max_calls = topnItemCount;
         topnArraySize = topnItemCount * sizeof(TopnItem);
         orderedTopn = palloc0(topnArraySize);
@@ -968,8 +1011,10 @@ topn(PG_FUNCTION_ARGS)
  * DatumToBytes converts datum to its bytes according to its type
  */
 static void
-DatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry, StringInfo datumString)
+DatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
 {
+	TypeCacheEntry *datumTypeCacheEntry = lookup_type_cache(datumType, 0);
+
 	if (datumTypeCacheEntry->type_id != RECORDOID
 		&& datumTypeCacheEntry->typtype != TYPTYPE_COMPOSITE)
 	{
@@ -1022,7 +1067,7 @@ DatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry, StringInfo datumS
 			}
 
 			appendStringInfoChar(datumString, '1');
-			DatumToBytes(tmp, lookup_type_cache(att->atttypid, 0), datumString);
+			DatumToBytes(tmp, att->atttypid, datumString);
 		}
 	}
 }
