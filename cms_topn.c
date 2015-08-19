@@ -24,17 +24,18 @@
 
 /*
  * Frequency can be set to different types to specify limit and size of the
- * counters. if we change type of Frequency, we also need to update MAX_FREQUENCY
+ * counters. If we change type of Frequency, we also need to update MAX_FREQUENCY
  * above.
  */
 typedef uint64 Frequency;
 
 /*
- * CmsTopn is the main struct for the count-min sketch top n implementation and it
- * has two variable length fields. First one is for keeping the sketch which is
- * pointed by "sketch" of the struct and other is for keeping the most frequent
- * n items. It is not possible to point this by adding another field to the struct
- * so we are using pointer arithmetic to reach and handle these items.
+ * CmsTopn is the main struct for the count-min sketch top n implementation and
+ * it has two variable length fields. First one is an array for keeping the sketch
+ * which is pointed by "sketch" of the struct and second one is an ArrayType for
+ * keeping the most frequent n items. It is not possible to lay out two variable
+ * width fields consecutively in memory. So we are using pointer arithmetic to
+ * reach and handle ArrayType for the most frequent n items.
  */
 typedef struct CmsTopn
 {
@@ -61,12 +62,11 @@ typedef struct TopnItem
 static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 							   float8 confidenceInterval);
 static ArrayType * CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem);
-static Frequency InsertItemToCountMinSketch(CmsTopn *cmsTopn, Datum newItem,
-											Oid newItemType);
+static Frequency UpdateCountMinSketch(CmsTopn *cmsTopn, Datum newItem, Oid newItemType);
+static ArrayType * UpdateTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray,
+								   Datum candidateItem, Frequency itemFrequency);
 static ArrayType * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
 								ArrayType *topnArray);
-static ArrayType * InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray,
-										 Datum item, Frequency itemFrequency);
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopn);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
 static Size CmsTopnEmptySize(CmsTopn *cmsTopn);
@@ -225,12 +225,17 @@ Datum
 cms_topn_add_agg(PG_FUNCTION_ARGS)
 {
 	CmsTopn *cmsTopn = NULL;
+	CmsTopn *updatedCmsTopn = NULL;
 	ArrayType *topnArray = NULL;
+	ArrayType *updatedTopnArray = NULL;
 	Datum newItem = PG_GETARG_DATUM(1);
+	Datum detoastedItem = 0;
 	Oid newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
+	TypeCacheEntry *newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
 	uint32 topnItemCount = PG_GETARG_UINT32(2);
 	float8 errorBound = DEFAULT_ERROR_BOUND;
 	float8 confidenceInterval =  DEFAULT_CONFIDENCE_INTERVAL;
+	Frequency newItemFrequency = 0;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
 	{
@@ -255,10 +260,22 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(cmsTopn);
 	}
 
-	topnArray = CmsTopnAddItem(cmsTopn, topnArray, newItem);
-	cmsTopn = FormCmsTopn(cmsTopn, topnArray);
+	/* make sure the datum is not toasted */
+	if (newItemTypeCacheEntry->typlen == -1)
+	{
+		detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
+	}
+	else
+	{
+		detoastedItem = newItem;
+	}
 
-	PG_RETURN_POINTER(cmsTopn);
+	newItemFrequency = UpdateCountMinSketch(cmsTopn, detoastedItem, newItemType);
+	updatedTopnArray = UpdateTopnArray(cmsTopn, topnArray, detoastedItem,
+									   newItemFrequency);
+	updatedCmsTopn = FormCmsTopn(cmsTopn, updatedTopnArray);
+
+	PG_RETURN_POINTER(updatedCmsTopn);
 }
 
 
@@ -383,15 +400,14 @@ CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem)
 	{
 		Datum detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
 
-		newItemFrequency = InsertItemToCountMinSketch(cmsTopn, detoastedItem,
-													  newItemType);
-		newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, detoastedItem,
-											 newItemFrequency);
+		newItemFrequency = UpdateCountMinSketch(cmsTopn, detoastedItem, newItemType);
+		newTopnArray = UpdateTopnArray(cmsTopn, topnArray, detoastedItem,
+									   newItemFrequency);
 	}
 	else
 	{
-		newItemFrequency = InsertItemToCountMinSketch(cmsTopn, newItem, newItemType);
-		newTopnArray = InsertItemToTopnArray(cmsTopn, topnArray, newItem, newItemFrequency);
+		newItemFrequency = UpdateCountMinSketch(cmsTopn, newItem, newItemType);
+		newTopnArray = UpdateTopnArray(cmsTopn, topnArray, newItem, newItemFrequency);
 	}
 
 	return newTopnArray;
@@ -403,7 +419,7 @@ CmsTopnAddItem(CmsTopn *cmsTopn, ArrayType *topnArray, Datum newItem)
  * and return its new estimated frequency.
  */
 static Frequency
-InsertItemToCountMinSketch(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
+UpdateCountMinSketch(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 {
 	uint32 hashIndex = 0;
 	uint64 hashValueArray[2] = {0, 0};
@@ -428,6 +444,107 @@ InsertItemToCountMinSketch(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	}
 
 	return newFrequency;
+}
+
+
+/*
+ * UpdateTopnArray is a helper function for the unions and inserts. It takes
+ * given item and its frequency. If the item is not in the top n array, it tries
+ * to insert new item. If there is place in the top n array, it insert directly.
+ * Otherwise, it compares its frequency with minimum of current items in the array
+ * and updates top n array if new frequency is bigger.
+ */
+static ArrayType *
+UpdateTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum candidateItem,
+				Frequency itemFrequency)
+{
+	ArrayType *updatedTopnArray = NULL;
+	int itemIndex = -1;
+	Oid itemType = topnArray->elemtype;
+	TypeCacheEntry *itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+	int16 itemTypeLength = itemTypeCacheEntry->typlen;
+	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
+	char itemTypeAlignment = itemTypeCacheEntry->typalign;
+	uint32 currentArraySize = TopnArraySize(topnArray);
+	Frequency minOfNewTopnItems = MAX_FREQUENCY;
+	bool candidateAlreadyInArray = false;
+
+	/*
+	 * If item frequency is smaller than min frequency of old top n items,
+	 * it cannot be in the top n items and we insert it if there is place.
+	 * Otherwise, we need to check new minimum and whether it is in the top n.
+	 */
+	if (itemFrequency <= cmsTopn->minFrequencyOfTopnItems)
+	{
+		if (currentArraySize < cmsTopn->topnItemCount)
+		{
+			itemIndex =  currentArraySize + 1;
+			minOfNewTopnItems = itemFrequency;
+		}
+	}
+	else
+	{
+		ArrayIterator iterator = array_create_iterator(topnArray, 0);
+		Datum topnItem = 0;
+		int topnItemIndex = 1;
+		int minIndex = 1;
+		bool hasMoreItem = false;
+		bool isNull = false;
+
+		/*
+		 * Find the top n item with minimum frequency to replace it with candidate
+		 * top n item.
+		 */
+		hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
+		while (hasMoreItem)
+		{
+			Frequency topnItemFrequency =
+					CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemType);
+			if (topnItemFrequency < minOfNewTopnItems)
+			{
+				minOfNewTopnItems = topnItemFrequency;
+				minIndex = topnItemIndex;
+			}
+
+			candidateAlreadyInArray = datumIsEqual(topnItem, candidateItem,
+												   itemTypeByValue, itemTypeLength);
+			if (candidateAlreadyInArray)
+			{
+				minIndex = -1;
+				break;
+			}
+
+			hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
+			topnItemIndex++;
+		}
+
+		/* if new item is not in the top n and there is place, insert the item */
+		if (!candidateAlreadyInArray && currentArraySize < cmsTopn->topnItemCount)
+		{
+			minIndex = currentArraySize + 1;
+			minOfNewTopnItems = Min(minOfNewTopnItems, itemFrequency);
+		}
+
+		itemIndex = minIndex;
+	}
+
+	/*
+	 * If it is not in the top n structure and its frequency bigger than minimum
+	 * put into top n instead of the item which has minimum frequency. If it is in
+	 * top n or not frequent items, do not change anything.
+	 */
+	if (!candidateAlreadyInArray && minOfNewTopnItems <= itemFrequency)
+	{
+		updatedTopnArray = array_set(topnArray, 1, &itemIndex, candidateItem, false, -1,
+								 	 itemTypeLength, itemTypeByValue, itemTypeAlignment);
+		cmsTopn->minFrequencyOfTopnItems = minOfNewTopnItems;
+	}
+	else
+	{
+		updatedTopnArray = topnArray;
+	}
+
+	return updatedTopnArray;
 }
 
 
@@ -600,105 +717,9 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn, ArrayType *topnArray
 
 		newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
 														secondTopnArray->elemtype);
-		newTopnArray = InsertItemToTopnArray(firstCmsTopn, newTopnArray, topnItem,
-							  	  	  	  	 newItemFrequency);
+		newTopnArray = UpdateTopnArray(firstCmsTopn, newTopnArray, topnItem,
+									   newItemFrequency);
 		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-	}
-
-	return newTopnArray;
-}
-
-
-/*
- * InsertItemToTopnArray is a helper function for the unions and inserts. It takes
- * given item and its frequency. If the item is not in the top n array, it tries
- * to insert new item. If there is place in the top n array, it insert directly.
- * Otherwise, it compares its frequency with minimum of current items in the array
- * and updates top n array if new frequency is bigger.
- */
-static ArrayType *
-InsertItemToTopnArray(CmsTopn *cmsTopn, ArrayType *topnArray, Datum item, Frequency itemFrequency)
-{
-	ArrayType *newTopnArray = NULL;
-	int itemIndex = -1;
-	Oid itemType = topnArray->elemtype;
-	TypeCacheEntry *itemTypeCacheEntry = lookup_type_cache(itemType, 0);
-	int16 itemTypeLength = itemTypeCacheEntry->typlen;
-	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
-	char itemTypeAlignment = itemTypeCacheEntry->typalign;
-	uint32 currentArraySize = TopnArraySize(topnArray);
-	Frequency minOfNewTopnItems = MAX_FREQUENCY;
-
-	/*
-	 * If item frequency is smaller than min frequency of old top n items,
-	 * it cannot be in the top n items and we insert it if there is place.
-	 * Otherwise, we need to check new minimum and whether it is in the top n.
-	 */
-	if (itemFrequency <= cmsTopn->minFrequencyOfTopnItems)
-	{
-		if (currentArraySize < cmsTopn->topnItemCount)
-		{
-			itemIndex =  currentArraySize + 1;
-			minOfNewTopnItems = itemFrequency;
-		}
-	}
-	else
-	{
-		ArrayIterator iterator = array_create_iterator(topnArray, 0);
-		Datum topnItem = 0;
-		int topnItemIndex = 1;
-		int minIndex = 1;
-		bool hasMoreItem = false;
-		bool isNull = false;
-
-		hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
-		while (hasMoreItem)
-		{
-			Frequency topnItemFrequency = 0;
-			bool sameDatum = false;
-
-			topnItemFrequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemType);
-			if (topnItemFrequency < minOfNewTopnItems)
-			{
-				minOfNewTopnItems = topnItemFrequency;
-				minIndex = topnItemIndex;
-			}
-
-			sameDatum = datumIsEqual(topnItem, item, itemTypeByValue, itemTypeLength);
-			if (sameDatum)
-			{
-				minIndex = -1;
-				break;
-			}
-
-			hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
-			topnItemIndex++;
-		}
-
-		/* if new item is not in the top n and there is place, insert the item */
-		if (minIndex != -1 && currentArraySize < cmsTopn->topnItemCount)
-		{
-			minIndex = currentArraySize + 1;
-			minOfNewTopnItems = Min(minOfNewTopnItems, itemFrequency);
-		}
-
-		itemIndex = minIndex;
-	}
-
-	/*
-	 * If it is not in the top n structure and its frequency bigger than minimum
-	 * put into top n instead of the item which has minimum frequency. If it is in
-	 * top n or not frequent items, do not change anything.
-	 */
-	if (itemIndex != -1 && minOfNewTopnItems <= itemFrequency)
-	{
-		newTopnArray = array_set(topnArray, 1, &itemIndex, item, false, -1,
-								 itemTypeLength, itemTypeByValue, itemTypeAlignment);
-		cmsTopn->minFrequencyOfTopnItems = minOfNewTopnItems;
-	}
-	else
-	{
-		newTopnArray = topnArray;
 	}
 
 	return newTopnArray;
