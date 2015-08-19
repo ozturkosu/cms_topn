@@ -1,28 +1,30 @@
 # cms_topn
-The project creates a new Postgres type which is called cms_topn to implement the count-min sketch and additional structures as Postgres extension to provide some functionalities:
-	
+`cms_topn` is a count-min sketch top-n extension for PostgreSQL. This project creates a new Postgres type which is called cms_topn to implement the count-min sketch and additional structures as Postgres extension to provide some functionalities:
+
 #### 1. Point Query
-The point query is to get frequency estimation of an item in the stream with the help of count-min sketch(cms) structure.
+The point query is to get frequency estimate of an item in the count-min sketch(cms) structure.
 	
-#### 2. Top n Query
-This query is helpful to find the most frequent items in the stream.
-	
+#### 2. Top-N Query
+This query is helpful to find the most frequent items in the count-min sketch(cms) structure.
+
 #### 3. Union
-Union is the process of merging more than one cms_topn structure for cumulative results of the point and top n query.
-	
-# Count-Min Sketch and The Top n implementation
-The count-min sketch is a summary structure for the frequencies of events in a data stream. It is simply a matrix which has n rows and m columns. In addition, one hash function which maps an item to a number from 1 to m is required for each row. The matrix is updated for each item in the stream with the help of these hash functions and the resulting table can be used for the queries.
-	
-The CM sketch structure is enough to calculate the frequency of a tuple, however we need more to find the top n items. After updates, it is not possible to get the top n tuples from values but we can update another structure which keeps the most frequent n items during the iteration. The additional structure keeps the top n at the end of the iteration.
-	
-In addition, the CM sketch and the additional structure allows us to combine the separately computed results of subsets. After collecting sub-results, we can add the matrices and evaluate each different top n candidate from the subsets again according to the total matrix. This gives a good approximation for the top n of all data because each matrix also contains information about  the items in the corresponding subset even if the items is not included in the top n for this subset of data.
+Union is the process of merging more than one cms_topn structure for cumulative results of the point and top-n query.
+
+# Count-Min Sketch and The Top-N implementation
+The count-min sketch is a summary structure for the frequencies of events in a data stream. It is simply a matrix which has n rows and m columns. One independent hash function which maps an item to a number from 1 to m is required for each row. The matrix is updated for every item added with the help of these hash functions and the resulting table can be used for the queries.
+
+The CM sketch structure is enough to calculate the frequency of a tuple. However we need more to find the top-n items. After updates, it is not possible to get the top-n tuples from sketch but we can update another structure which keeps the most frequent n items during the iteration. The additional structure is used to keep top n items at the end of the each iteration.
+
+The CM sketch and the additional structure allows us to combine the separately computed results of subsets. After collecting sub-results, we can add the matrices and evaluate each different top-n candidate from the subsets again according to the total matrix. This gives a good approximation for the top-n of all data because each matrix also contains information about  the items in the corresponding subset even if the items is not included in the top-n for this subset of data.
+
+In research part of this project, we noticed that [PipelineDB](https://github.com/pipelinedb/pipelinedb) already has a [count-min sketch implementation](https://github.com/pipelinedb/pipelinedb/blob/db70946eef8a781b93ebc270be86546f357a1286/src/backend/pipeline/cmsketch.c). We inspired from it and implemented a similar count-min sketch logic as an extension. Then we added top-n logic on the top of it.
 
 #Usage
 We provide user defined Postgres types and functions with the extension:
 
 ###Data Type
 ######cms_topn
-User defined PostgreSQL type to keep the count min sketch structure and the top n list.
+User defined PostgreSQL type to keep the count-min sketch structure and the top-n list.
 
 ##Function to create empty cms_topn structure
 ######cms_topn(any type, integer n, double precision epsilon default 0.001, double precision p default 0.99)
@@ -59,8 +61,8 @@ Once you have PostgreSQL, you're ready to build cms_topn. For this, you will nee
 	PATH=/usr/local/pgsql/bin/:$PATH make
 	sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 	
-#Use Case
-We made this example use case similar to hll extension readme.
+#Use Case Example
+We made this example use case similar to [hll extension](https://github.com/aggregateknowledge/postgresql-hll) data warehouse use case example.
 
 Let's assume I've got a fact table that records users' visits to my site, what they did, and where they came from. It's got hundreds of millions of rows. Table scans take minutes (or at least lots and lots of seconds.)
 
