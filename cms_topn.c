@@ -45,7 +45,7 @@ typedef struct CmsTopn
 	uint32 sketchDepth;
 	uint32 sketchWidth;
 	uint32 topnItemCount;
-	uint32 topnItemSize;
+	uint32 sizeForTopnItem;
 	Frequency minFrequencyOfTopnItems;
 	Frequency sketch[1];
 } CmsTopn;
@@ -222,7 +222,7 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 	CmsTopn *updatedCmsTopn = NULL;
 	uint32 topnItemCount = PG_GETARG_UINT32(2);
 	float8 errorBound = DEFAULT_ERROR_BOUND;
-	float8 confidenceInterval =  DEFAULT_CONFIDENCE_INTERVAL;
+	float8 confidenceInterval = DEFAULT_CONFIDENCE_INTERVAL;
 	Datum newItem = 0;
 	Oid newItemType = InvalidOid;
 
@@ -268,7 +268,7 @@ cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 	CmsTopn *updatedCmsTopn = NULL;
 	uint32 topnItemCount = PG_GETARG_UINT32(2);
 	float8 errorBound = PG_GETARG_FLOAT8(3);
-	float8 confidenceInterval =  PG_GETARG_FLOAT8(4);
+	float8 confidenceInterval = PG_GETARG_FLOAT8(4);
 	Datum newItem = 0;
 	Oid newItemType = InvalidOid;
 
@@ -320,7 +320,8 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 	uint32 sketchDepth = 0;
 	Size staticStructSize = 0;
 	Size sketchSize = 0;
-	Size topnArraySize = 0;
+	Size reservedSizeForItems = 0;
+	Size topnArrayReservedSize = 0;
 	Size totalCmsTopnSize = 0;
 
 	if (topnItemCount <= 0)
@@ -346,14 +347,15 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 	sketchDepth = (uint32) ceil(log(1 / (1 - confidenceInterval)));
 	sketchSize =  sizeof(Frequency) * sketchDepth * sketchWidth;
 	staticStructSize = sizeof(CmsTopn);
-	topnArraySize = TOPN_ARRAY_OVERHEAD + topnItemCount * DEFAULT_TOPN_ITEM_SIZE;
-	totalCmsTopnSize = staticStructSize + sketchSize + topnArraySize;
+	reservedSizeForItems = topnItemCount * DEFAULT_TOPN_ITEM_SIZE;
+	topnArrayReservedSize = TOPN_ARRAY_OVERHEAD + reservedSizeForItems;
+	totalCmsTopnSize = staticStructSize + sketchSize + topnArrayReservedSize;
 
 	cmsTopn = palloc0(totalCmsTopnSize);
 	cmsTopn->sketchDepth = sketchDepth;
 	cmsTopn->sketchWidth = sketchWidth;
 	cmsTopn->topnItemCount = topnItemCount;
-	cmsTopn->topnItemSize = DEFAULT_TOPN_ITEM_SIZE;
+	cmsTopn->sizeForTopnItem = DEFAULT_TOPN_ITEM_SIZE;
 	cmsTopn->minFrequencyOfTopnItems = 0;
 
 	SET_VARSIZE(cmsTopn, totalCmsTopnSize);
@@ -570,24 +572,30 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
 static CmsTopn *
 FormCmsTopn(CmsTopn *currentCmsTopn, ArrayType *newTopnArray)
 {
-	Size currentTopnArraySize = currentCmsTopn->topnItemCount *
-								currentCmsTopn->topnItemSize;
 	Size cmsTopnEmptySize = CmsTopnEmptySize(currentCmsTopn);
+	Size topnArrayReservedSize = VARSIZE(currentCmsTopn) - cmsTopnEmptySize;
+	Size newTopnArraySize = ARR_SIZE(newTopnArray);
 	char *newCmsTopn = NULL;
 	char *topnArrayOffset = NULL;
 
-	/* check whether we have enough memory with new top n array */
-	if (ARR_SIZE(newTopnArray) > currentTopnArraySize)
+	/* check whether we have enough memory for new top-n array */
+	if (newTopnArraySize > topnArrayReservedSize)
 	{
-		Size newCmsTopnSize = VARSIZE(currentCmsTopn) + currentTopnArraySize;
-		currentCmsTopn->topnItemSize *= 2;
-		newCmsTopn = palloc0(newCmsTopnSize);
+		Size newReservedSizeForItems = 0;
+		Size newTopnArrayReservedSize = 0;
+		Size sizeForTopnItem = currentCmsTopn->sizeForTopnItem * 2;
+		uint32 topnItemCount = currentCmsTopn->topnItemCount;
+
+		currentCmsTopn->sizeForTopnItem = sizeForTopnItem;
+		newReservedSizeForItems = topnItemCount * sizeForTopnItem;
+		newTopnArrayReservedSize = TOPN_ARRAY_OVERHEAD + newReservedSizeForItems;
+		newCmsTopn = palloc0(newTopnArrayReservedSize);
 
 		/* first copy until to top-n array */
 		memcpy(newCmsTopn, (char *)currentCmsTopn, cmsTopnEmptySize);
 
 		/* set size of new CmsTopn */
-		SET_VARSIZE(newCmsTopn, newCmsTopnSize);
+		SET_VARSIZE(newCmsTopn, newTopnArrayReservedSize);
 	}
 	else
 	{
