@@ -1,6 +1,6 @@
 // ****************************************************************************
 // This file originally from:
-//     http://web.mit.edu/mmadinot/Desktop/mmadinot/MacData/afs/athena.mit.edu/software/julia_v0.2.0/julia/src/support/MurmurHash3.c
+// http://web.mit.edu/mmadinot/Desktop/mmadinot/MacData/afs/athena.mit.edu/software/julia_v0.2.0/julia/src/support/MurmurHash3.c
 // ****************************************************************************
 
 //-----------------------------------------------------------------------------

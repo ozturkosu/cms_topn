@@ -21,25 +21,25 @@ SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
 
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 2) FROM numbers WHERE int_column = 0;
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
-   topn   
-----------
- (0,2000)
+  topn   
+---------
+ (0,200)
 (1 row)
 
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 2) FROM numbers WHERE int_column = 1;
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
-   topn   
-----------
- (0,2000)
- (1,100)
+  topn   
+---------
+ (0,200)
+ (1,10)
 (2 rows)
 
 INSERT INTO union_agg VALUES(NULL);
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
-   topn   
-----------
- (0,2000)
- (1,100)
+  topn   
+---------
+ (0,200)
+ (1,10)
 (2 rows)
 
 --check cms_topns with different parameters
@@ -68,10 +68,10 @@ INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 3) FR
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 3) FROM numbers WHERE int_column = 5;
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 3) FROM numbers WHERE int_column = 6;
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
-    topn    
-------------
- (4,400000)
- (5,60000)
- (0,2000)
+   topn    
+-----------
+ (4,40000)
+ (5,6000)
+ (0,200)
 (3 rows)
 
