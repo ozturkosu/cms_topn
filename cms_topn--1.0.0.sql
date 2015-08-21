@@ -73,11 +73,6 @@ CREATE FUNCTION cms_topn_union_agg(cms_topn, cms_topn)
 	AS 'MODULE_PATHNAME'
 	LANGUAGE C IMMUTABLE;
 
-CREATE AGGREGATE csm_topn_union(cms_topn )(
-	SFUNC = cms_topn_union,
-    STYPE = cms_topn
-);
-
 CREATE AGGREGATE cms_topn_union_agg(cms_topn )(
 	SFUNC = cms_topn_union_agg,
     STYPE = cms_topn

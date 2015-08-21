@@ -7,13 +7,13 @@ create table numbers (
 	int_column int
 );
 
-INSERT INTO numbers SELECT 0 FROM generate_series(1,2000);
-INSERT INTO numbers SELECT 1 FROM generate_series(1,100);
-INSERT INTO numbers SELECT 2 FROM generate_series(1,1500);
-INSERT INTO numbers SELECT 3 FROM generate_series(1,30);
-INSERT INTO numbers SELECT 4 FROM generate_series(1,400000);
-INSERT INTO numbers SELECT 5 FROM generate_series(1,60000);
-INSERT INTO numbers SELECT NULL FROM generate_series(1,50);
+INSERT INTO numbers SELECT 0 FROM generate_series(1,200);
+INSERT INTO numbers SELECT 1 FROM generate_series(1,10);
+INSERT INTO numbers SELECT 2 FROM generate_series(1,150);
+INSERT INTO numbers SELECT 3 FROM generate_series(1,3);
+INSERT INTO numbers SELECT 4 FROM generate_series(1,40000);
+INSERT INTO numbers SELECT 5 FROM generate_series(1,6000);
+INSERT INTO numbers SELECT NULL FROM generate_series(1,5);
 
 create table strings (
 	text_column text
@@ -21,11 +21,11 @@ create table strings (
 
 INSERT INTO strings SELECT '0' FROM generate_series(1,2);
 INSERT INTO strings SELECT '1' FROM generate_series(1,1);
-INSERT INTO strings SELECT '2' FROM generate_series(1,150000);
-INSERT INTO strings SELECT '3' FROM generate_series(1,200);
-INSERT INTO strings SELECT '4' FROM generate_series(1,60);
-INSERT INTO strings SELECT '5' FROM generate_series(1,700000);
-INSERT INTO strings SELECT NULL FROM generate_series(1,300);
+INSERT INTO strings SELECT '2' FROM generate_series(1,15000);
+INSERT INTO strings SELECT '3' FROM generate_series(1,20);
+INSERT INTO strings SELECT '4' FROM generate_series(1,6);
+INSERT INTO strings SELECT '5' FROM generate_series(1,70000);
+INSERT INTO strings SELECT NULL FROM generate_series(1,30);
 
 --check errors for unproper parameters
 SELECT cms_topn_add_agg(int_column, 0) FROM numbers;

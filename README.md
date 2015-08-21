@@ -13,7 +13,7 @@ Union is the process of merging more than one cms_topn structure for cumulative 
 # Count-Min Sketch and The Top-N implementation
 The count-min sketch is a summary structure for the frequencies of events in a data stream. It is simply a matrix which has n rows and m columns. One independent hash function which maps an item to a number from 1 to m is required for each row. The matrix is updated for every item added with the help of these hash functions and the resulting table can be used for the queries.
 
-The CM sketch structure is enough to calculate the frequency of a tuple. However we need more to find the top-n items. After updates, it is not possible to get the top-n tuples from sketch but we can update another structure which keeps the most frequent n items during the iteration. The additional structure is used to keep top n items at the end of the each iteration.
+The CM sketch structure is enough to calculate the frequency of a tuple. However we need more to find the top-n items. After updates, it is not possible to get the top-n tuples from sketch but we can update another structure which keeps the most frequent n items during the iteration. The additional structure is used to keep top-n items at the end of the each iteration.
 
 The CM sketch and the additional structure allows us to combine the separately computed results of subsets. After collecting sub-results, we can add the matrices and evaluate each different top-n candidate from the subsets again according to the total matrix. This gives a good approximation for the top-n of all data because each matrix also contains information about  the items in the corresponding subset even if the items is not included in the top-n for this subset of data.
 
@@ -27,20 +27,19 @@ We provide user defined Postgres types and functions with the extension:
 User defined PostgreSQL type to keep the count-min sketch structure and the top-n list.
 
 ##Function to create empty cms_topn structure
-######cms_topn(any type, integer n, double precision epsilon default 0.001, double precision p default 0.99)
-This creates empty cms_topn type for the given type(integer, text etc.). It has parameters for the precision and top-n count. Second parameter specifies top-n count. Third parameter specifies error bound for the approximation of the frequencies and the fourth one specifies 
-confidence of the error bound. Such as these default values give us an error bound of 0.1% with a confidence of 99%.
+######cms_topn(any type, integer n, double precision errorBound default 0.001, double precision confidenceInterval default 0.99)
+This creates empty cms_topn type for the given type(integer, text etc.). It has parameters for the precision and top-n count. Second parameter specifies top-n count. Third parameter specifies error bound for the approximation of the frequencies and the fourth one specifies confidence of the error bound. Size of the sketch is determined with the given error bound and confidence interval according to formula in this paper: http://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf. Such as these default values give us an error bound of 0.1% with a confidence of 99% and the created sketch has 5 rows and 2719 columns. Smaller error bound and higher confidence interval require bigger number of columns and rows, respectively. Size informaton of a created sketch can be seen with cms_topn_info function.
 
 ##Functions to insert items
 ######cms_topn_add(cms_topn, value) 
 Adds the given item to the given cms_topn structure.
 
-######cms_topn_add_agg(value,  integer n, double precision epsilon default 0.001, double precision p default 0.99)
+######cms_topn_add_agg(value,  integer n, double precision errorBound default 0.001, double precision confidenceInterval default 0.99)
 This is the aggregate add function. It creates an empty cms_topn with given parameters and inserts series of item from given column to create aggregate summary of these items.
 
 ##Functions to get results
 ######topn(cms_topn, value)
-Gives the top n elements which have the same type with the second parameter and their frequencies as set of rows.
+Gives the top-n elements which have the same type with the second parameter and their frequencies as set of rows. This function requires a parameter for the type because PostgreSQL has strongly typed system and the type of frequent items in returning rows has to be given.  
 
 ######cms_topn_frequency(cms_topn, value)
 Gives frequency estimation of an item.
@@ -50,7 +49,7 @@ Gives some information about size of cms_topn structure.
 
 ##Functions to combine different summaries
 ######cms_topn_union(cms_topn, cms_topn)
-Creates new structure by combining two count min sketch structures and evaluating their frequencies again.
+Creates new structure by combining two count-min sketch structures and evaluating their frequencies again.
 
 ######cms_topn_union_agg(value)
 This is the aggregate for union operation.
@@ -68,10 +67,10 @@ Let's assume I've got a fact table that records users' visits to my site, what t
 
 ```sql
 CREATE TABLE facts (
-   date                date,
-   user_id           integer,
-   activity_type   smallint,
-   referrer           varchar(255)
+   date				date,
+   user_id			integer,
+   activity_type	smallint,
+   referrer			varchar(255)
 );
 ```
 
@@ -84,8 +83,8 @@ CREATE EXTENSION cms_topn;
 ```sql
 -- Create the table
 CREATE TABLE daily_hits (
-   date            date UNIQUE,
-   users          cms_topn
+   date		date UNIQUE,
+   users	cms_topn
 );
 ```
 
@@ -101,12 +100,12 @@ INSERT INTO daily_hits(date, users)
        date;
 ```
 
-We're inserting users into one cms_topn and keeping the top 10 users per day. Now we can ask for the top 10 users for each day:
+We're inserting users into one cms_topn and keeping the top-10 users per day. Now we can ask for the top-10 users for each day:
 
 ```sql
 SELECT 
      date, 
-     topn(users)
+     topn(users, integer)
 FROM 
      daily_hits;
 ```
@@ -115,12 +114,12 @@ What if you wanted to this week's top-10 users?
 
 ```sql
 SELECT
-     topn(cms_topn_union_agg(users))
+     topn(cms_topn_union_agg(users), integer)
 FROM
      daily_hits 
 WHERE
-     date >= '2012-01-02'::date AND 
-     date <= '2012-01-08'::date;
+     date >= '2015-06-22'::date AND 
+     date <= '2012-06-28'::date;
 ```
 
 On same week for every date, get frequency of user with id 1234.
@@ -131,6 +130,6 @@ SELECT
 FROM
      daily_hits 
 WHERE
-     date >= '2012-01-02'::date AND 
-     date <= '2012-01-08'::date;
+     date >= '2015-06-22'::date AND 
+     date <= '2015-06-28'::date;
 ```

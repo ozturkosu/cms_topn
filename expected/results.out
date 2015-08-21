@@ -88,37 +88,37 @@ INSERT INTO results(cms_topn_column) SELECT cms_topn_add_agg(int_column, 3) FROM
 SELECT cms_topn_frequency(cms_topn_column, 0) FROM results;
  cms_topn_frequency 
 --------------------
-               2000
+                200
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, 1) FROM results;
  cms_topn_frequency 
 --------------------
-                100
+                 10
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, 2) FROM results;
  cms_topn_frequency 
 --------------------
-               1500
+                150
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, 3) FROM results;
  cms_topn_frequency 
 --------------------
-                 30
+                  3
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, 4) FROM results;
  cms_topn_frequency 
 --------------------
-             400000
+              40000
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, 5) FROM results;
  cms_topn_frequency 
 --------------------
-              60000
+               6000
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, -1) FROM results;
@@ -150,25 +150,25 @@ SELECT cms_topn_frequency(cms_topn_column, '1'::text) FROM results;
 SELECT cms_topn_frequency(cms_topn_column, '2'::text) FROM results;
  cms_topn_frequency 
 --------------------
-             150000
+              15000
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, '3'::text) FROM results;
  cms_topn_frequency 
 --------------------
-                200
+                 20
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, '4'::text) FROM results;
  cms_topn_frequency 
 --------------------
-                 60
+                  6
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, '5'::text) FROM results;
  cms_topn_frequency 
 --------------------
-             700000
+              70000
 (1 row)
 
 SELECT cms_topn_frequency(cms_topn_column, '6'::text) FROM results;
