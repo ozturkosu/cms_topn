@@ -67,7 +67,7 @@ static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 static CmsTopn * UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, Oid itemType);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
 static Frequency UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType);
-static void DatumToBytes(Datum datum, Oid datumType, StringInfo datumString);
+static void ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString);
 static Frequency CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn,
 													uint64 *hashValueArray);
 static ArrayType * UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem,
@@ -172,9 +172,10 @@ cms_topn(PG_FUNCTION_ARGS)
  * interval according to formula in this paper:
  * http://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf.
  *
- * Note that here we set only number of frequent items and don't allocate memory
- * for keeping them. Memory allocation for frequent items array is done when the
- * first insertion occurs.
+ * Note that here we allocate initial memory for the ArrayType which keeps the frequent
+ * item. This allocation includes ArrayType overhead for one dimensional array and
+ * additional memory according to number of top-n items and default size for an
+ * individual item.
  */
 static CmsTopn *
 CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
@@ -353,7 +354,7 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	Frequency newFrequency = 0;
 	Frequency minFrequency = MAX_FREQUENCY;
 
-	DatumToBytes(newItem, newItemType, newItemString);
+	ConvertDatumToBytes(newItem, newItemType, newItemString);
 	MurmurHash3_x64_128(newItemString->data, newItemString->len, MURMUR_SEED,
 						&hashValueArray);
 	minFrequency = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
@@ -364,7 +365,7 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	{
 		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;
 		uint64 hashValue = hashValueArray[0] + (hashIndex * hashValueArray[1]);
-		uint32 widthIndex = hashValue	% cmsTopn->sketchWidth;
+		uint32 widthIndex = hashValue % cmsTopn->sketchWidth;
 		uint32 counterIndex = depthOffset + widthIndex;
 
 		/* selective update to decrease effect of collisions */
@@ -380,66 +381,69 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 
 
 /*
- * DatumToBytes converts datum to its bytes according to its type
+ * ConvertDatumToBytes converts datum to its bytes according to its type
  */
 static void
-DatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
+ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
 {
 	TypeCacheEntry *datumTypeCacheEntry = lookup_type_cache(datumType, 0);
+	int16 datumTypeLength = datumTypeCacheEntry->typlen;
+	bool datumTypeByValue = datumTypeCacheEntry->typbyval;
+	bool datumCompositeType = datumTypeCacheEntry->typtype != TYPTYPE_COMPOSITE;
 
-	if (datumTypeCacheEntry->type_id != RECORDOID
-		&& datumTypeCacheEntry->typtype != TYPTYPE_COMPOSITE)
+	if (datumType != RECORDOID && datumCompositeType)
 	{
-		Size size;
+		Size datumSize;
 
-		if (datumTypeCacheEntry->typlen == -1)
+		if (datumTypeLength == -1)
 		{
-			size = VARSIZE_ANY_EXHDR(DatumGetPointer(datum));
+			datumSize = VARSIZE_ANY_EXHDR(DatumGetPointer(datum));
 		}
 		else
 		{
-			size = datumGetSize(datum, datumTypeCacheEntry->typbyval,
-								datumTypeCacheEntry->typlen);
+			datumSize = datumGetSize(datum, datumTypeByValue, datumTypeLength);
 		}
 
-		if (datumTypeCacheEntry->typbyval)
+		if (datumTypeByValue)
 		{
-			appendBinaryStringInfo(datumString, (char *) &datum, size);
+			appendBinaryStringInfo(datumString, (char *) &datum, datumSize);
 		}
 		else
 		{
-			appendBinaryStringInfo(datumString, VARDATA_ANY(datum), size);
+			appendBinaryStringInfo(datumString, VARDATA_ANY(datum), datumSize);
 		}
 	}
 	else
 	{
 		/* For composite types, we need to serialize all attributes */
-		HeapTupleHeader record = DatumGetHeapTupleHeader(datum);
-		TupleDesc tupleDescriptor = NULL;
+		HeapTupleHeader compositeHeader = DatumGetHeapTupleHeader(datum);
+		Oid compositeId = HeapTupleHeaderGetTypeId(compositeHeader);
+		int32 compositeMode = HeapTupleHeaderGetTypMod(compositeHeader);
+		TupleDesc compositeDescriptor = lookup_rowtype_tupdesc_copy(compositeId,
+																	compositeMode);
+		Form_pg_attribute *attributes = compositeDescriptor->attrs;
+		int attributeCount = compositeDescriptor->natts;
 		int attributeIndex = 0;
-		HeapTupleData tmptup;
+		HeapTupleData temporaryTuple;
 
-		tupleDescriptor = lookup_rowtype_tupdesc_copy(HeapTupleHeaderGetTypeId(record),
-													  HeapTupleHeaderGetTypMod(record));
-		tmptup.t_len = HeapTupleHeaderGetDatumLength(record);
-		tmptup.t_data = record;
+		temporaryTuple.t_len = HeapTupleHeaderGetDatumLength(compositeHeader);
+		temporaryTuple.t_data = compositeHeader;
 
-		for (attributeIndex = 0; attributeIndex < tupleDescriptor->natts;
-			 attributeIndex++)
+		for (attributeIndex = 0; attributeIndex < attributeCount; attributeIndex++)
 		{
-			Form_pg_attribute att = tupleDescriptor->attrs[attributeIndex];
-			bool isnull;
-			Datum tmp = heap_getattr(&tmptup, attributeIndex + 1, tupleDescriptor,
-									 &isnull);
+			Form_pg_attribute attribute = attributes[attributeIndex];
+			bool isNull = false;
+			Datum temporaryDatum = heap_getattr(&temporaryTuple, attributeIndex + 1,
+												compositeDescriptor, &isNull);
 
-			if (isnull)
+			if (isNull)
 			{
 				appendStringInfoChar(datumString, '0');
 				continue;
 			}
 
 			appendStringInfoChar(datumString, '1');
-			DatumToBytes(tmp, att->atttypid, datumString);
+			ConvertDatumToBytes(temporaryDatum, attribute->atttypid, datumString);
 		}
 	}
 }
@@ -598,11 +602,11 @@ CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType)
 	if (typeCacheEntry->typlen == -1)
 	{
 		Datum detoastedItem =  PointerGetDatum(PG_DETOAST_DATUM(item));
-		DatumToBytes(detoastedItem, itemType, itemString);
+		ConvertDatumToBytes(detoastedItem, itemType, itemString);
 	}
 	else
 	{
-		DatumToBytes(item, itemType, itemString);
+		ConvertDatumToBytes(item, itemType, itemString);
 	}
 
 	MurmurHash3_x64_128(itemString->data, itemString->len, MURMUR_SEED, &hashValueArray);
@@ -614,7 +618,9 @@ CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType)
 
 /*
  * FormCmsTopn copies current count-min sketch and new top-n array into a new
- * CmsTopn.
+ * CmsTopn. This function is called only when there is an update in top n and it only
+ * copies ArrayType part if allocated memory is enough for new ArrayType. Otherwise,
+ * it allocates new memory and copies all cms_topn.
  */
 static CmsTopn *
 FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
@@ -654,7 +660,6 @@ FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
 	/* finally copy new top-n array*/
 	topnArrayOffset = ((char *) newCmsTopn) + sizeWithoutTopnArray;
 	memcpy(topnArrayOffset, newTopnArray, ARR_SIZE(newTopnArray));
-
 
 	return (CmsTopn *) newCmsTopn;
 }
@@ -762,10 +767,6 @@ cms_topn_union(PG_FUNCTION_ARGS)
 	CmsTopn *firstCmsTopn = NULL;
 	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
-	ArrayType *firstTopnArray = NULL;
-	ArrayType *secondTopnArray = NULL;
-	Size firstTopnArrayLength = 0;
-	Size secondTopnArrayLength = 0;
 
 	if (PG_ARGISNULL(0) && PG_ARGISNULL(1))
 	{
@@ -785,35 +786,6 @@ cms_topn_union(PG_FUNCTION_ARGS)
 	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
 	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
 
-	if (firstCmsTopn->sketchDepth != secondCmsTopn->sketchDepth ||
-		firstCmsTopn->sketchWidth != secondCmsTopn->sketchWidth ||
-		firstCmsTopn->topnItemCount != secondCmsTopn->topnItemCount)
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 	 	errmsg("cannot merge cms_topns with different parameters")));
-	}
-
-	firstTopnArray = TopnArray(firstCmsTopn);
-	secondTopnArray = TopnArray(secondCmsTopn);
-	firstTopnArrayLength = ARR_DIMS(firstTopnArray)[0];
-	secondTopnArrayLength = ARR_DIMS(secondTopnArray)[0];
-
-	if (firstTopnArrayLength == 0)
-	{
-		PG_RETURN_POINTER(secondCmsTopn);
-	}
-
-	if (secondTopnArrayLength == 0)
-	{
-		PG_RETURN_POINTER(firstCmsTopn);
-	}
-
-	if (ARR_ELEMTYPE(firstTopnArray) != ARR_ELEMTYPE(secondTopnArray))
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 	 	errmsg("cannot merge cms_topns of different types")));
-	}
-
 	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn);
 
 	PG_RETURN_POINTER(newCmsTopn);
@@ -830,6 +802,9 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 {
 	ArrayType *firstTopnArray = TopnArray(firstCmsTopn);
 	ArrayType *secondTopnArray = TopnArray(secondCmsTopn);
+	CmsTopn *newCmsTopn = NULL;
+	Size firstTopnArrayLength = ARR_DIMS(firstTopnArray)[0];
+	Size secondTopnArrayLength = ARR_DIMS(secondTopnArray)[0];
 	ArrayType *newTopnArray = NULL;
 	Oid itemType = ARR_ELEMTYPE(firstTopnArray);
 	uint32 topnItemIndex = 0;
@@ -839,34 +814,59 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 	bool isNull = false;
 	bool hasMoreItem = false;
 
-	sketchSize = firstCmsTopn->sketchDepth * firstCmsTopn->sketchWidth;
-	for (topnItemIndex = 0; topnItemIndex < sketchSize; topnItemIndex++)
+	if (firstCmsTopn->sketchDepth != secondCmsTopn->sketchDepth ||
+		firstCmsTopn->sketchWidth != secondCmsTopn->sketchWidth ||
+		firstCmsTopn->topnItemCount != secondCmsTopn->topnItemCount)
 	{
-		firstCmsTopn->sketch[topnItemIndex] += secondCmsTopn->sketch[topnItemIndex];
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 	 	errmsg("cannot merge cms_topns with different parameters")));
 	}
 
-	topnIterator = array_create_iterator(secondTopnArray, 0);
-	newTopnArray = firstTopnArray;
-
-	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-	while (hasMoreItem)
+	if (firstTopnArrayLength == 0)
 	{
-		Frequency newItemFrequency = 0;
-		bool topnArrayUpdated = false;
-
-		newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
-														itemType);
-		newTopnArray = UpdateTopnArray(firstCmsTopn, topnItem, newItemFrequency,
-									   itemType, &topnArrayUpdated);
-		if (topnArrayUpdated)
+		newCmsTopn = secondCmsTopn;
+	}
+	else if (secondTopnArrayLength == 0)
+	{
+		newCmsTopn = firstCmsTopn;
+	}
+	else if (ARR_ELEMTYPE(firstTopnArray) != ARR_ELEMTYPE(secondTopnArray))
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 	 	errmsg("cannot merge cms_topns of different types")));
+	}
+	else
+	{
+		sketchSize = firstCmsTopn->sketchDepth * firstCmsTopn->sketchWidth;
+		for (topnItemIndex = 0; topnItemIndex < sketchSize; topnItemIndex++)
 		{
-			firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
+			firstCmsTopn->sketch[topnItemIndex] += secondCmsTopn->sketch[topnItemIndex];
 		}
 
+		topnIterator = array_create_iterator(secondTopnArray, 0);
+		newTopnArray = firstTopnArray;
+
 		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+		while (hasMoreItem)
+		{
+			Frequency newItemFrequency = 0;
+			bool topnArrayUpdated = false;
+
+			newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
+															itemType);
+			newTopnArray = UpdateTopnArray(firstCmsTopn, topnItem, newItemFrequency,
+										   itemType, &topnArrayUpdated);
+			if (topnArrayUpdated)
+			{
+				firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
+			}
+
+			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+		}
+		newCmsTopn = firstCmsTopn;
 	}
 
-	return firstCmsTopn;
+	return newCmsTopn;
 }
 
 
@@ -879,10 +879,6 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 	CmsTopn *firstCmsTopn = NULL;
 	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
-	ArrayType *firstTopnArray = NULL;
-	ArrayType *secondTopnArray = NULL;
-	Size firstTopnArrayLength = 0;
-	Size secondTopnArrayLength = 0;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
 	{
@@ -906,35 +902,6 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 
 	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
 	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
-
-	if (firstCmsTopn->sketchDepth != secondCmsTopn->sketchDepth
-		|| firstCmsTopn->sketchWidth != secondCmsTopn->sketchWidth
-		|| firstCmsTopn->topnItemCount != secondCmsTopn->topnItemCount)
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 	 	errmsg("cannot merge cms_topns with different parameters")));
-	}
-
-	firstTopnArray = TopnArray(firstCmsTopn);
-	secondTopnArray = TopnArray(secondCmsTopn);
-	firstTopnArrayLength = ARR_DIMS(firstTopnArray)[0];
-	secondTopnArrayLength = ARR_DIMS(secondTopnArray)[0];
-
-	if (firstTopnArrayLength == 0)
-	{
-		PG_RETURN_POINTER(secondCmsTopn);
-	}
-
-	if (secondTopnArrayLength == 0)
-	{
-		PG_RETURN_POINTER(firstCmsTopn);
-	}
-
-	if (ARR_ELEMTYPE(firstTopnArray) != ARR_ELEMTYPE(secondTopnArray))
-	{
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 	 	errmsg("cannot merge cms_topns of different types")));
-	}
 
 	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn);
 
@@ -1007,7 +974,7 @@ topn(PG_FUNCTION_ARGS)
     FuncCallContext *functionCallContext = NULL;
     TupleDesc tupleDescriptor = NULL;
     TupleDesc completeDescriptor = NULL;
-	Oid resultTypeId = get_fn_expr_argtype(fcinfo->flinfo, 1);
+	Oid returningItemId = get_fn_expr_argtype(fcinfo->flinfo, 1);
     CmsTopn *cmsTopn = NULL;
     ArrayType *topnArray = NULL;
     Size topnArrayLength = 0;
@@ -1043,7 +1010,7 @@ topn(PG_FUNCTION_ARGS)
     		elog(ERROR, "there is not any items in the cms_topn");
     	}
 
-    	if (ARR_ELEMTYPE(topnArray) != resultTypeId)
+    	if (ARR_ELEMTYPE(topnArray) != returningItemId)
     	{
     		elog(ERROR, "not proper cms_topn for the result type");
     	}
@@ -1067,7 +1034,6 @@ topn(PG_FUNCTION_ARGS)
 			topnIndex++;
 		}
 
-		/* improvable part by using different sort algorithms */
 		for (topnIndex = 0; topnIndex < currentArrayLength; topnIndex++)
 		{
 			Frequency max = orderedTopn[topnIndex].frequency;
@@ -1090,7 +1056,7 @@ topn(PG_FUNCTION_ARGS)
 		}
 
 		functionCallContext->user_fctx = orderedTopn;
-		get_call_result_type(fcinfo, &resultTypeId, &tupleDescriptor);
+		get_call_result_type(fcinfo, &returningItemId, &tupleDescriptor);
 
 		completeDescriptor = BlessTupleDesc(tupleDescriptor);
 		functionCallContext->tuple_desc = completeDescriptor;
