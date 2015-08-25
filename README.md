@@ -105,7 +105,7 @@ We're inserting users into one cms_topn and keeping the top-10 users per day. No
 ```sql
 SELECT 
      date, 
-     topn(users, integer)
+     topn(users, NULL::integer)
 FROM 
      daily_hits;
 ```
@@ -114,7 +114,7 @@ What if you wanted to this week's top-10 users?
 
 ```sql
 SELECT
-     topn(cms_topn_union_agg(users), integer)
+     topn(cms_topn_union_agg(users), NULL::integer)
 FROM
      daily_hits 
 WHERE
