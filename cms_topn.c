@@ -1,3 +1,13 @@
+/*-------------------------------------------------------------------------
+ *
+ * cms_topn.c
+ *
+ * This file contains the function definitions to perform top-n, point and
+ * union queries by using the count-min sketch structure.
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include "postgres.h"
 #include "fmgr.h"
 
@@ -360,7 +370,13 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	minFrequency = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
 	newFrequency = minFrequency + 1;
 
-	/* XXX Here we need to explain why we can create an independent hash function */
+	/*
+	 * We can create an independent hash function for each index by using two hash
+	 * values from the Murmur Hash function. This is a standard technique from the
+	 * hashing literature for the additional hash functions of the form
+	 * g(x) = h1(x) + h2(x) and does not hurt the independence:
+	 * http://www.eecs.harvard.edu/~kirsch/pubs/bbbf/esa06.pdf
+	 */
 	for (hashIndex = 0; hashIndex < cmsTopn->sketchDepth; hashIndex++)
 	{
 		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;

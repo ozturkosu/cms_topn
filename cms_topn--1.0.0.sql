@@ -1,3 +1,5 @@
+/* cms_topn/cms_topn--1.0.0.sql */
+
 CREATE TYPE cms_topn;
 
 CREATE FUNCTION cms_topn_in(cstring)

@@ -1,3 +1,4 @@
-comment = 'type for count-min sketch top n'
+# cms_topn extension
+comment = 'type for count-min sketch top-n'
 default_version = '1.0.0'
 module_pathname = '$libdir/cms_topn'
