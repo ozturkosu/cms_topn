@@ -11,7 +11,10 @@ SELECT topn(NULL, NULL::integer);
 (1 row)
 
 SELECT topn(cms_topn(2), NULL::text);
-ERROR:  there is not any items in the cms_topn
+ topn 
+------
+(0 rows)
+
 --check with wrong parameters
 SELECT topn(cms_topn_add(cms_topn(2),2),NULL::text);
 ERROR:  not proper cms_topn for the result type

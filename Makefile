@@ -1,9 +1,3 @@
-#-------------------------------------------------------------------------
-#
-# Makefile for cms_topn
-#
-#-------------------------------------------------------------------------
-
 MODULE_big = cms_topn
 OBJS =		\
 			cms_topn.o \
@@ -16,7 +10,7 @@ DATA =		\
 			$(NULL)
 
 
-REGRESS = create add add_agg union union_agg results
+REGRESS = create add add_agg union union_agg results in_out_send_recv
 
 EXTRA_CLEAN += -r $(RPM_BUILD_ROOT)
 
