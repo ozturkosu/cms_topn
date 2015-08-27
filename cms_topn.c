@@ -75,7 +75,7 @@ typedef struct TopnItem
 static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 							   float8 confidenceInterval);
 static CmsTopn * UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem,
-							   TypeCacheEntry *itemTypeCacheEntry);
+							   TypeCacheEntry *newItemTypeCacheEntry);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
 static Frequency UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
 									 TypeCacheEntry *newItemTypeCacheEntry);
@@ -296,13 +296,13 @@ cms_topn_add(PG_FUNCTION_ARGS)
  * array. Finally it forms new CmsTopn from updated sketch and updated top-n array.
  */
 static CmsTopn *
-UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *itemTypeCacheEntry)
+UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *newItemTypeCacheEntry)
 {
 	CmsTopn *updatedCmsTopn = NULL;
 	ArrayType *currentTopnArray = NULL;
 	ArrayType *updatedTopnArray = NULL;
 	Datum detoastedItem = 0;
-	Oid itemType = itemTypeCacheEntry->type_id;
+	Oid itemType = newItemTypeCacheEntry->type_id;
 	Frequency newItemFrequency = 0;
 	bool topnArrayUpdated = false;
 	Size currentTopnArrayLength = 0;
@@ -317,7 +317,7 @@ UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *itemTypeCa
 	}
 
 	/* make sure the datum is not toasted */
-	if (itemTypeCacheEntry->typlen == -1)
+	if (newItemTypeCacheEntry->typlen == -1)
 	{
 		detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
 	}
@@ -326,9 +326,9 @@ UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *itemTypeCa
 		detoastedItem = newItem;
 	}
 
-	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem, itemTypeCacheEntry);
+	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem, newItemTypeCacheEntry);
 	updatedTopnArray = UpdateTopnArray(currentCmsTopn, detoastedItem, newItemFrequency,
-									   itemTypeCacheEntry, &topnArrayUpdated);
+									   newItemTypeCacheEntry, &topnArrayUpdated);
 	if (topnArrayUpdated)
 	{
 		updatedCmsTopn = FormCmsTopn(currentCmsTopn, updatedTopnArray);
