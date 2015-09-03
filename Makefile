@@ -16,7 +16,7 @@ DATA =		\
 			$(NULL)
 
 
-REGRESS = create add add_agg union union_agg results in_out_send_recv
+REGRESS = create add add_agg union union_agg results copy
 
 EXTRA_CLEAN += -r $(RPM_BUILD_ROOT)
 

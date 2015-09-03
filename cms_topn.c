@@ -382,7 +382,7 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
 	 * We can create an independent hash function for each index by using two hash
 	 * values from the Murmur Hash function. This is a standard technique from the
 	 * hashing literature for the additional hash functions of the form
-	 * g(x) = h1(x) + h2(x) and does not hurt the independence:
+	 * g(x) = h1(x) + i * h2(x) and does not hurt the independence:
 	 * http://www.eecs.harvard.edu/~kirsch/pubs/bbbf/esa06.pdf
 	 */
 	for (hashIndex = 0; hashIndex < cmsTopn->sketchDepth; hashIndex++)
@@ -655,6 +655,7 @@ FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
 	Size sizeWithoutTopnArray = staticSize + sketchSize;
 	Size topnArrayReservedSize = VARSIZE(cmsTopn) - sizeWithoutTopnArray;
 	Size newTopnArraySize = ARR_SIZE(newTopnArray);
+	Size newCmsTopnSize = 0;
 	char *newCmsTopn = NULL;
 	char *topnArrayOffset = NULL;
 
@@ -663,19 +664,20 @@ FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
 	{
 		Size newReservedSizeForItems = 0;
 		Size newTopnArrayReservedSize = 0;
-		Size sizeForTopnItem = cmsTopn->sizeForTopnItem * 2;
 		uint32 topnItemCount = cmsTopn->topnItemCount;
+		Size sizeForTopnItem = (newTopnArraySize / topnItemCount) * 2;
 
 		cmsTopn->sizeForTopnItem = sizeForTopnItem;
 		newReservedSizeForItems = topnItemCount * sizeForTopnItem;
 		newTopnArrayReservedSize = TOPN_ARRAY_OVERHEAD + newReservedSizeForItems;
-		newCmsTopn = palloc0(newTopnArrayReservedSize);
+		newCmsTopnSize = sizeWithoutTopnArray + newTopnArrayReservedSize;
+		newCmsTopn = palloc0(newCmsTopnSize);
 
 		/* first copy until to top-n array */
 		memcpy(newCmsTopn, (char *)cmsTopn, sizeWithoutTopnArray);
 
 		/* set size of new CmsTopn */
-		SET_VARSIZE(newCmsTopn, newTopnArrayReservedSize);
+		SET_VARSIZE(newCmsTopn, newCmsTopnSize);
 	}
 	else
 	{
