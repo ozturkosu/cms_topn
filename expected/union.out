@@ -22,7 +22,10 @@ SELECT * FROM topn(cms_topn_union(NULL, cms_topn_add(cms_topn(2),'cms_topn'::tex
 
 --check cases with empty cms_topn
 SELECT * FROM topn(cms_topn_union(cms_topn(1), cms_topn(1)), NULL::integer);
-ERROR:  there is not any items in the cms_topn
+ item | frequency 
+------+-----------
+(0 rows)
+
 SELECT * FROM topn(cms_topn_union(cms_topn(3), cms_topn_add(cms_topn(3),'cms_topn'::text)), NULL::text);
    item   | frequency 
 ----------+-----------

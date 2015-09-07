@@ -38,48 +38,48 @@ UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::tex
 UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 3);
 ERROR:  not proper type for this cms_topn
 --check normal insertion
---for fixed size type like big integer
+--cidr
 DELETE FROM add_test;
 INSERT INTO add_test VALUES(cms_topn(2));
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 0::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::bigint);
-SELECT topn(cms_topn_column, NULL::bigint) from add_test;
- topn  
--------
- (0,1)
-(1 row)
-
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 5341434213434443::bigint);
-SELECT topn(cms_topn_column, NULL::bigint) from add_test;
-         topn         
-----------------------
- (5341434213434443,3)
- (0,1)
-(2 rows)
-
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -8::bigint);
-SELECT topn(cms_topn_column, NULL::bigint) from add_test;
-         topn         
-----------------------
- (-8,4)
- (5341434213434443,3)
-(2 rows)
-
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, -42184342348342834::bigint);
-SELECT topn(cms_topn_column, NULL::bigint) from add_test;
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.100.128/25'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::cidr);
+SELECT topn(cms_topn_column, NULL::cidr) from add_test;
           topn          
 ------------------------
- (-42184342348342834,5)
- (-8,4)
+ (192.168.100.128/25,1)
+(1 row)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/24'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/24'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/24'::cidr);
+SELECT topn(cms_topn_column, NULL::cidr) from add_test;
+          topn          
+------------------------
+ (192.168.0.0/24,3)
+ (192.168.100.128/25,1)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/25'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/25'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/25'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168/25'::cidr);
+SELECT topn(cms_topn_column, NULL::cidr) from add_test;
+        topn        
+--------------------
+ (192.168.0.0/25,4)
+ (192.168.0.0/24,3)
+(2 rows)
+
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.1'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.1'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.1'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.1'::cidr);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.1'::cidr);
+SELECT topn(cms_topn_column, NULL::cidr) from add_test;
+        topn        
+--------------------
+ (192.168.1.0/24,5)
+ (192.168.0.0/25,4)
 (2 rows)
 
 SELECT cms_topn_info(cms_topn_column) from add_test;
@@ -88,43 +88,43 @@ SELECT cms_topn_info(cms_topn_column) from add_test;
  Sketch depth = 5, Sketch width = 2719, Size = 106kB
 (1 row)
 
---for variable length type like text
+--inet
 DELETE FROM add_test;
 INSERT INTO add_test VALUES(cms_topn(2));
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'hello'::text);
-SELECT topn(cms_topn_column, NULL::text) from add_test;
-   topn    
------------
- (hello,3)
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.100.128/25'::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.100.128/25'::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.100.128/25'::inet);
+SELECT topn(cms_topn_column, NULL::inet) from add_test;
+          topn          
+------------------------
+ (192.168.100.128/25,3)
 (1 row)
 
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'world'::text);
-SELECT topn(cms_topn_column, NULL::text) from add_test;
-   topn    
------------
- (hello,3)
- (world,1)
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '192.168.100.128/23'::inet);
+SELECT topn(cms_topn_column, NULL::inet) from add_test;
+          topn          
+------------------------
+ (192.168.100.128/25,3)
+ (192.168.100.128/23,1)
 (2 rows)
 
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::text);
-SELECT topn(cms_topn_column, NULL::text) from add_test;
-   topn    
------------
- (hello,3)
- (world,1)
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, NULL::inet);
+SELECT topn(cms_topn_column, NULL::inet) from add_test;
+          topn          
+------------------------
+ (192.168.100.128/25,3)
+ (192.168.100.128/23,1)
 (2 rows)
 
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
-UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, 'cms_topn'::text);
-SELECT topn(cms_topn_column, NULL::text) from add_test;
-     topn     
---------------
- (cms_topn,4)
- (hello,3)
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '10.1.2.3/32'::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '10.1.2.3/32'::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '10.1.2.3/32'::inet);
+UPDATE add_test SET cms_topn_column = cms_topn_add(cms_topn_column, '10.1.2.3/32'::inet);
+SELECT topn(cms_topn_column, NULL::inet) from add_test;
+          topn          
+------------------------
+ (10.1.2.3,4)
+ (192.168.100.128/25,3)
 (2 rows)
 

@@ -74,18 +74,24 @@ typedef struct TopnItem
 /* local functions forward declarations */
 static CmsTopn * CreateCmsTopn(int32 topnItemCount, float8 errorBound,
 							   float8 confidenceInterval);
-static CmsTopn * UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, Oid itemType);
+static CmsTopn * UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem,
+							   TypeCacheEntry *newItemTypeCacheEntry);
 static ArrayType * TopnArray(CmsTopn *cmsTopn);
-static Frequency UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType);
-static void ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString);
+static Frequency UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
+									 TypeCacheEntry *newItemTypeCacheEntry);
+static void ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
+								StringInfo datumString);
 static Frequency CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn,
 													uint64 *hashValueArray);
 static ArrayType * UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem,
-								   Frequency itemFrequency, Oid itemType,
+								   Frequency itemFrequency,
+								   TypeCacheEntry *itemTypeCacheEntry,
 								   bool *topnArrayUpdated);
-static Frequency CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType);
+static Frequency CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item,
+											  TypeCacheEntry *itemTypeCacheEntry);
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray);
-static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn);
+static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
+							  TypeCacheEntry *itemTypeCacheEntry);
 
 
 /* declarations for dynamic loading */
@@ -251,6 +257,7 @@ cms_topn_add(PG_FUNCTION_ARGS)
 	CmsTopn *updatedCmsTopn = NULL;
 	Datum newItem = 0;
 	Oid newItemType = InvalidOid;
+	TypeCacheEntry *newItemTypeCacheEntry = NULL;
 
 	/* check whether cms_topn is null */
 	if (PG_ARGISNULL(0))
@@ -276,7 +283,8 @@ cms_topn_add(PG_FUNCTION_ARGS)
 	}
 
 	newItem = PG_GETARG_DATUM(1);
-	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemType);
+	newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
+	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemTypeCacheEntry);
 
 	PG_RETURN_POINTER(updatedCmsTopn);
 }
@@ -288,13 +296,13 @@ cms_topn_add(PG_FUNCTION_ARGS)
  * array. Finally it forms new CmsTopn from updated sketch and updated top-n array.
  */
 static CmsTopn *
-UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, Oid itemType)
+UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *newItemTypeCacheEntry)
 {
 	CmsTopn *updatedCmsTopn = NULL;
 	ArrayType *currentTopnArray = NULL;
 	ArrayType *updatedTopnArray = NULL;
-	TypeCacheEntry *itemTypeCacheEntry = NULL;
 	Datum detoastedItem = 0;
+	Oid itemType = newItemTypeCacheEntry->type_id;
 	Frequency newItemFrequency = 0;
 	bool topnArrayUpdated = false;
 	Size currentTopnArrayLength = 0;
@@ -309,8 +317,7 @@ UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, Oid itemType)
 	}
 
 	/* make sure the datum is not toasted */
-	itemTypeCacheEntry = lookup_type_cache(itemType, 0);
-	if (itemTypeCacheEntry->typlen == -1)
+	if (newItemTypeCacheEntry->typlen == -1)
 	{
 		detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
 	}
@@ -319,9 +326,9 @@ UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, Oid itemType)
 		detoastedItem = newItem;
 	}
 
-	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem, itemType);
+	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem, newItemTypeCacheEntry);
 	updatedTopnArray = UpdateTopnArray(currentCmsTopn, detoastedItem, newItemFrequency,
-									   itemType, &topnArrayUpdated);
+									   newItemTypeCacheEntry, &topnArrayUpdated);
 	if (topnArrayUpdated)
 	{
 		updatedCmsTopn = FormCmsTopn(currentCmsTopn, updatedTopnArray);
@@ -352,11 +359,12 @@ TopnArray(CmsTopn *cmsTopn)
 
 
 /*
- * UpdateSketchInPlace updates skecth in CmsTopn with given item in place and
+ * UpdateSketchInPlace updates sketch in CmsTopn with given item in place and
  * returns new estimated frequency for the given item.
  */
 static Frequency
-UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
+UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
+					TypeCacheEntry *newItemTypeCacheEntry)
 {
 	uint32 hashIndex = 0;
 	uint64 hashValueArray[2] = {0, 0};
@@ -364,7 +372,7 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	Frequency newFrequency = 0;
 	Frequency minFrequency = MAX_FREQUENCY;
 
-	ConvertDatumToBytes(newItem, newItemType, newItemString);
+	ConvertDatumToBytes(newItem, newItemTypeCacheEntry, newItemString);
 	MurmurHash3_x64_128(newItemString->data, newItemString->len, MURMUR_SEED,
 						&hashValueArray);
 	minFrequency = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
@@ -374,7 +382,7 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
 	 * We can create an independent hash function for each index by using two hash
 	 * values from the Murmur Hash function. This is a standard technique from the
 	 * hashing literature for the additional hash functions of the form
-	 * g(x) = h1(x) + h2(x) and does not hurt the independence:
+	 * g(x) = h1(x) + i * h2(x) and does not hurt the independence:
 	 * http://www.eecs.harvard.edu/~kirsch/pubs/bbbf/esa06.pdf
 	 */
 	for (hashIndex = 0; hashIndex < cmsTopn->sketchDepth; hashIndex++)
@@ -400,14 +408,14 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem, Oid newItemType)
  * ConvertDatumToBytes converts datum to its bytes according to its type
  */
 static void
-ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
+ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
+					StringInfo datumString)
 {
-	TypeCacheEntry *datumTypeCacheEntry = lookup_type_cache(datumType, 0);
 	int16 datumTypeLength = datumTypeCacheEntry->typlen;
 	bool datumTypeByValue = datumTypeCacheEntry->typbyval;
 	bool datumCompositeType = datumTypeCacheEntry->typtype != TYPTYPE_COMPOSITE;
 
-	if (datumType != RECORDOID && datumCompositeType)
+	if (datumTypeCacheEntry->type_id != RECORDOID && datumCompositeType)
 	{
 		Size datumSize;
 
@@ -438,6 +446,7 @@ ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
 		TupleDesc compositeDescriptor = lookup_rowtype_tupdesc_copy(compositeId,
 																	compositeMode);
 		Form_pg_attribute *attributes = compositeDescriptor->attrs;
+		TypeCacheEntry *attributeCacheEntry = NULL;
 		int attributeCount = compositeDescriptor->natts;
 		int attributeIndex = 0;
 		HeapTupleData temporaryTuple;
@@ -459,7 +468,8 @@ ConvertDatumToBytes(Datum datum, Oid datumType, StringInfo datumString)
 			}
 
 			appendStringInfoChar(datumString, '1');
-			ConvertDatumToBytes(temporaryDatum, attribute->atttypid, datumString);
+			attributeCacheEntry = lookup_type_cache(attribute->atttypid, 0);
+			ConvertDatumToBytes(temporaryDatum, attributeCacheEntry, datumString);
 		}
 	}
 }
@@ -502,12 +512,11 @@ CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn, uint64 *hashValueArray)
  */
 static ArrayType *
 UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
-				Oid itemType, bool *topnArrayUpdated)
+				TypeCacheEntry *itemTypeCacheEntry, bool *topnArrayUpdated)
 {
 	ArrayType *currentTopnArray = TopnArray(cmsTopn);
 	ArrayType *updatedTopnArray = NULL;
 	int candidateIndex = -1;
-	TypeCacheEntry *itemTypeCacheEntry = lookup_type_cache(itemType, 0);
 	int16 itemTypeLength = itemTypeCacheEntry->typlen;
 	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
 	char itemTypeAlignment = itemTypeCacheEntry->typalign;
@@ -517,7 +526,7 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
 
 	if (currentArrayLength == 0)
 	{
-		currentTopnArray = construct_empty_array(itemType);
+		currentTopnArray = construct_empty_array(itemTypeCacheEntry->type_id);
 	}
 
 	/*
@@ -550,7 +559,7 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
 		while (hasMoreItem)
 		{
 			Frequency topnItemFrequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
-																	   itemType);
+																	 itemTypeCacheEntry);
 			if (topnItemFrequency < minOfNewTopnItems)
 			{
 				minOfNewTopnItems = topnItemFrequency;
@@ -607,22 +616,22 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
  * CmsTopnEstimateHashedItemFrequency after calculating hash values.
  */
 static Frequency
-CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item, Oid itemType)
+CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item,
+							 TypeCacheEntry *itemTypeCacheEntry)
 {
-	TypeCacheEntry *typeCacheEntry = lookup_type_cache(itemType, 0);
 	uint64 hashValueArray[2] = {0, 0};
 	StringInfo itemString = makeStringInfo();
 	Frequency count = 0;
 
 	/* make sure the datum is not toasted */
-	if (typeCacheEntry->typlen == -1)
+	if (itemTypeCacheEntry->typlen == -1)
 	{
 		Datum detoastedItem =  PointerGetDatum(PG_DETOAST_DATUM(item));
-		ConvertDatumToBytes(detoastedItem, itemType, itemString);
+		ConvertDatumToBytes(detoastedItem, itemTypeCacheEntry, itemString);
 	}
 	else
 	{
-		ConvertDatumToBytes(item, itemType, itemString);
+		ConvertDatumToBytes(item, itemTypeCacheEntry, itemString);
 	}
 
 	MurmurHash3_x64_128(itemString->data, itemString->len, MURMUR_SEED, &hashValueArray);
@@ -646,6 +655,7 @@ FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
 	Size sizeWithoutTopnArray = staticSize + sketchSize;
 	Size topnArrayReservedSize = VARSIZE(cmsTopn) - sizeWithoutTopnArray;
 	Size newTopnArraySize = ARR_SIZE(newTopnArray);
+	Size newCmsTopnSize = 0;
 	char *newCmsTopn = NULL;
 	char *topnArrayOffset = NULL;
 
@@ -654,19 +664,20 @@ FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray)
 	{
 		Size newReservedSizeForItems = 0;
 		Size newTopnArrayReservedSize = 0;
-		Size sizeForTopnItem = cmsTopn->sizeForTopnItem * 2;
 		uint32 topnItemCount = cmsTopn->topnItemCount;
+		Size sizeForTopnItem = (newTopnArraySize / topnItemCount) * 2;
 
 		cmsTopn->sizeForTopnItem = sizeForTopnItem;
 		newReservedSizeForItems = topnItemCount * sizeForTopnItem;
 		newTopnArrayReservedSize = TOPN_ARRAY_OVERHEAD + newReservedSizeForItems;
-		newCmsTopn = palloc0(newTopnArrayReservedSize);
+		newCmsTopnSize = sizeWithoutTopnArray + newTopnArrayReservedSize;
+		newCmsTopn = palloc0(newCmsTopnSize);
 
 		/* first copy until to top-n array */
 		memcpy(newCmsTopn, (char *)cmsTopn, sizeWithoutTopnArray);
 
 		/* set size of new CmsTopn */
-		SET_VARSIZE(newCmsTopn, newTopnArrayReservedSize);
+		SET_VARSIZE(newCmsTopn, newCmsTopnSize);
 	}
 	else
 	{
@@ -696,6 +707,7 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 	float8 errorBound = DEFAULT_ERROR_BOUND;
 	float8 confidenceInterval = DEFAULT_CONFIDENCE_INTERVAL;
 	Datum newItem = 0;
+	TypeCacheEntry *newItemTypeCacheEntry = NULL;
 	Oid newItemType = InvalidOid;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
@@ -720,8 +732,18 @@ cms_topn_add_agg(PG_FUNCTION_ARGS)
 	}
 
 	newItem = PG_GETARG_DATUM(1);
-	newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
-	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemType);
+	if (fcinfo->flinfo->fn_extra == NULL)
+	{
+		newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
+		newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
+		fcinfo->flinfo->fn_extra = newItemTypeCacheEntry;
+	}
+	else
+	{
+		newItemTypeCacheEntry = fcinfo->flinfo->fn_extra;
+	}
+
+	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemTypeCacheEntry);
 
 	PG_RETURN_POINTER(updatedCmsTopn);
 }
@@ -742,6 +764,7 @@ cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 	float8 errorBound = PG_GETARG_FLOAT8(3);
 	float8 confidenceInterval = PG_GETARG_FLOAT8(4);
 	Datum newItem = 0;
+	TypeCacheEntry *newItemTypeCacheEntry = NULL;
 	Oid newItemType = InvalidOid;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
@@ -766,8 +789,18 @@ cms_topn_add_agg_with_parameters(PG_FUNCTION_ARGS)
 	}
 
 	newItem = PG_GETARG_DATUM(1);
-	newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
-	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemType);
+	if (fcinfo->flinfo->fn_extra == NULL)
+	{
+		newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
+		newItemTypeCacheEntry = lookup_type_cache(newItemType, 0);
+		fcinfo->flinfo->fn_extra = newItemTypeCacheEntry;
+	}
+	else
+	{
+		newItemTypeCacheEntry = fcinfo->flinfo->fn_extra;
+	}
+
+	updatedCmsTopn = UpdateCmsTopn(currentCmsTopn, newItem, newItemTypeCacheEntry);
 
 	PG_RETURN_POINTER(updatedCmsTopn);
 }
@@ -783,6 +816,9 @@ cms_topn_union(PG_FUNCTION_ARGS)
 	CmsTopn *firstCmsTopn = NULL;
 	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
+	ArrayType *firstTopnArray = NULL;
+	Size firstTopnArrayLength = 0;
+	TypeCacheEntry *itemTypeCacheEntry = NULL;
 
 	if (PG_ARGISNULL(0) && PG_ARGISNULL(1))
 	{
@@ -801,8 +837,17 @@ cms_topn_union(PG_FUNCTION_ARGS)
 
 	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
 	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
+	firstTopnArray = TopnArray(firstCmsTopn);
+	firstTopnArrayLength = ARR_DIMS(firstTopnArray)[0];
 
-	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn);
+	if (firstTopnArrayLength != 0)
+	{
+		Oid itemType = firstTopnArray->elemtype;
+
+		itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+	}
+
+	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn, itemTypeCacheEntry);
 
 	PG_RETURN_POINTER(newCmsTopn);
 }
@@ -814,7 +859,8 @@ cms_topn_union(PG_FUNCTION_ARGS)
  * of union.
  */
 static CmsTopn *
-CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
+CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
+			 TypeCacheEntry *itemTypeCacheEntry)
 {
 	ArrayType *firstTopnArray = TopnArray(firstCmsTopn);
 	ArrayType *secondTopnArray = TopnArray(secondCmsTopn);
@@ -822,7 +868,6 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 	Size firstTopnArrayLength = ARR_DIMS(firstTopnArray)[0];
 	Size secondTopnArrayLength = ARR_DIMS(secondTopnArray)[0];
 	ArrayType *newTopnArray = NULL;
-	Oid itemType = ARR_ELEMTYPE(firstTopnArray);
 	uint32 topnItemIndex = 0;
 	Datum topnItem = 0;
 	ArrayIterator topnIterator = NULL;
@@ -869,9 +914,9 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn)
 			bool topnArrayUpdated = false;
 
 			newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
-															itemType);
+															itemTypeCacheEntry);
 			newTopnArray = UpdateTopnArray(firstCmsTopn, topnItem, newItemFrequency,
-										   itemType, &topnArrayUpdated);
+										   itemTypeCacheEntry, &topnArrayUpdated);
 			if (topnArrayUpdated)
 			{
 				firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
@@ -895,6 +940,9 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 	CmsTopn *firstCmsTopn = NULL;
 	CmsTopn *secondCmsTopn = NULL;
 	CmsTopn *newCmsTopn = NULL;
+	ArrayType *secondTopnArray = NULL;
+	Size secondTopnArrayLength = 0;
+	TypeCacheEntry *itemTypeCacheEntry = NULL;
 
 	if (!AggCheckCallContext(fcinfo, NULL))
 	{
@@ -918,8 +966,22 @@ cms_topn_union_agg(PG_FUNCTION_ARGS)
 
 	firstCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(0);
 	secondCmsTopn = (CmsTopn *) PG_GETARG_VARLENA_P(1);
+	secondTopnArray = TopnArray(firstCmsTopn);
+	secondTopnArrayLength = ARR_DIMS(secondTopnArray)[0];
 
-	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn);
+	if (fcinfo->flinfo->fn_extra == NULL && secondTopnArrayLength != 0)
+	{
+		Oid itemType = secondTopnArray->elemtype;
+
+		itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+		fcinfo->flinfo->fn_extra = itemTypeCacheEntry;
+	}
+	else
+	{
+		itemTypeCacheEntry = fcinfo->flinfo->fn_extra;
+	}
+
+	newCmsTopn = CmsTopnUnion(firstCmsTopn, secondCmsTopn, itemTypeCacheEntry);
 
 	PG_RETURN_POINTER(newCmsTopn);
 }
@@ -937,6 +999,7 @@ cms_topn_frequency(PG_FUNCTION_ARGS)
 	ArrayType *topnArray = TopnArray(cmsTopn);
 	Datum item = PG_GETARG_DATUM(1);
 	Oid	itemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
+	TypeCacheEntry *itemTypeCacheEntry = NULL;
 	Frequency count = 0;
 
 	if (itemType == InvalidOid)
@@ -952,7 +1015,8 @@ cms_topn_frequency(PG_FUNCTION_ARGS)
 						errmsg("Not proper type for this cms_topn")));
 	}
 
-	count = CmsTopnEstimateItemFrequency(cmsTopn, item, itemType);
+	itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+	count = CmsTopnEstimateItemFrequency(cmsTopn, item, itemTypeCacheEntry);
 
 	PG_RETURN_INT32(count);
 }
@@ -1006,7 +1070,8 @@ topn(PG_FUNCTION_ARGS)
     {
     	MemoryContext oldcontext = NULL;
     	Size topnArraySize = 0;
-    	int currentArrayLength = 0;
+    	Oid itemType = 0;
+    	TypeCacheEntry *itemTypeCacheEntry = NULL;
     	int topnIndex = 0;
 
     	functionCallContext = SRF_FIRSTCALL_INIT();
@@ -1021,43 +1086,44 @@ topn(PG_FUNCTION_ARGS)
     	topnArray = TopnArray(cmsTopn);
     	topnArrayLength = ARR_DIMS(topnArray)[0];
 
-    	if (topnArrayLength == 0)
+    	if (topnArrayLength != 0)
     	{
-    		elog(ERROR, "there is not any items in the cms_topn");
+    		itemType = ARR_ELEMTYPE(topnArray);
+    		itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+
+        	if (itemType != returningItemId)
+        	{
+        		elog(ERROR, "not proper cms_topn for the result type");
+        	}
+
+        	functionCallContext->max_calls = topnArrayLength;
+        	topnArraySize = topnArrayLength * sizeof(TopnItem);
+        	orderedTopn = palloc0(topnArraySize);
+        	topnIterator = array_create_iterator(topnArray, 0);
+        	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
     	}
 
-    	if (ARR_ELEMTYPE(topnArray) != returningItemId)
-    	{
-    		elog(ERROR, "not proper cms_topn for the result type");
-    	}
 
-    	currentArrayLength = ARR_DIMS(topnArray)[0];
-    	functionCallContext->max_calls = currentArrayLength;
-    	topnArraySize = currentArrayLength * sizeof(TopnItem);
-    	orderedTopn = palloc0(topnArraySize);
-    	topnIterator = array_create_iterator(topnArray, 0);
-
-    	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
     	while (hasMoreItem)
     	{
     		TopnItem f;
-    		Oid itemType = ARR_ELEMTYPE(topnArray);
 
 			f.item = topnItem;
-			f.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemType);
+			f.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
+													   itemTypeCacheEntry);
 			orderedTopn[topnIndex] = f;
 			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
 			topnIndex++;
 		}
 
-		for (topnIndex = 0; topnIndex < currentArrayLength; topnIndex++)
+		for (topnIndex = 0; topnIndex < topnArrayLength; topnIndex++)
 		{
 			Frequency max = orderedTopn[topnIndex].frequency;
 			TopnItem tmp;
 			int maxIndex = topnIndex;
 			int j = 0;
 
-			for (j = topnIndex + 1; j < currentArrayLength; j++)
+			for (j = topnIndex + 1; j < topnArrayLength; j++)
 			{
 				if(orderedTopn[j].frequency > max)
 				{

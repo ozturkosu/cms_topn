@@ -45,7 +45,7 @@ CREATE FUNCTION cms_topn_add_agg(cms_topn, anyelement, integer)
 	AS 'MODULE_PATHNAME'
 	LANGUAGE C IMMUTABLE;
 
-CREATE FUNCTION cms_topn_add_agg_with_parameters(cms_topn, anyelement, integer, double precision default 0.002, double precision default 0.995)
+CREATE FUNCTION cms_topn_add_agg_with_parameters(cms_topn, anyelement, integer, double precision default 0.001, double precision default 0.99)
 	RETURNS cms_topn
 	AS 'MODULE_PATHNAME'
 	LANGUAGE C IMMUTABLE;
