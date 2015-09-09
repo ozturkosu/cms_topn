@@ -35,9 +35,10 @@
 
 
 /*
- * Frequency can be set to different types to specify limit and size of the
- * counters. If we change type of Frequency, we also need to update MAX_FREQUENCY
- * above. If Frequency is defined as uint32, MAX_FREQUENCY has to be UINT_MAX.
+ * Frequency can be set to different data types to specify upper limit of counter
+ * and required space for each counter. If we change type of Frequency, we also
+ * need to update MAX_FREQUENCY above. Such as if Frequency is defined as uint32,
+ * then MAX_FREQUENCY has to be UINT_MAX.
  */
 typedef uint64 Frequency;
 
@@ -62,7 +63,7 @@ typedef struct CmsTopn
 
 /*
  * TopnItem is the struct to keep frequent items and their frequencies together.
- * It is useful to sort the top-n items before returning in "topn" function.
+ * It is useful to sort the top-n items before returning in topn() function.
  */
 typedef struct TopnItem
 {
@@ -84,9 +85,8 @@ static void ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry
 static Frequency CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn,
 													uint64 *hashValueArray);
 static ArrayType * UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem,
-								   Frequency itemFrequency,
 								   TypeCacheEntry *itemTypeCacheEntry,
-								   bool *topnArrayUpdated);
+								   Frequency itemFrequency, bool *topnArrayUpdated);
 static Frequency CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item,
 											  TypeCacheEntry *itemTypeCacheEntry);
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray);
@@ -113,7 +113,7 @@ PG_FUNCTION_INFO_V1(topn);
 
 
 /*
- * cms_topn_in converts from printable representation
+ * cms_topn_in creates cms_topn from printable representation.
  */
 Datum
 cms_topn_in(PG_FUNCTION_ARGS)
@@ -125,7 +125,7 @@ cms_topn_in(PG_FUNCTION_ARGS)
 
 
 /*
- *  cms_topn_out converts to printable representation
+ *  cms_topn_out converts cms_topn to printable representation.
  */
 Datum
 cms_topn_out(PG_FUNCTION_ARGS)
@@ -137,7 +137,7 @@ cms_topn_out(PG_FUNCTION_ARGS)
 
 
 /*
- * cms_topn_recv converts external binary format to bytea
+ * cms_topn_recv creates cms_topn from external binary format.
  */
 Datum
 cms_topn_recv(PG_FUNCTION_ARGS)
@@ -149,7 +149,7 @@ cms_topn_recv(PG_FUNCTION_ARGS)
 
 
 /*
- * cms_topn_send converts bytea to binary format
+ * cms_topn_send converts cms_topn to external binary format.
  */
 Datum
 cms_topn_send(PG_FUNCTION_ARGS)
@@ -162,7 +162,7 @@ cms_topn_send(PG_FUNCTION_ARGS)
 
 /*
  * cms_topn is a user-facing UDF which creates new cms_topn with given parameters.
- * The first parameter is for number of top items which will be kept, the others
+ * The first parameter is for the number of top items which will be kept, the others
  * are for error bound(e) and confidence interval(p) respectively. Given e and p,
  * estimated frequency can be at most (e*||a||) more than real frequency with the
  * probability p while ||a|| is the sum of frequencies of all items according to
@@ -184,14 +184,14 @@ cms_topn(PG_FUNCTION_ARGS)
 /*
  * CmsTopnCreate creates CmsTopn structure with given parameters. The first parameter
  * is for the number of frequent items, other two specifies error bound and confidence
- * interval. Size of the sketch is determined with the given error bound and confidence
- * interval according to formula in this paper:
+ * interval for this error bound. Size of the sketch is determined with the given
+ * error bound and confidence interval according to formula in this paper:
  * http://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf.
  *
- * Note that here we allocate initial memory for the ArrayType which keeps the frequent
- * item. This allocation includes ArrayType overhead for one dimensional array and
- * additional memory according to number of top-n items and default size for an
- * individual item.
+ * Note that here we also allocate initial memory for the ArrayType which keeps
+ * the frequent items. This allocation includes ArrayType overhead for one dimensional
+ * array and additional memory according to number of top-n items and default size
+ * for an individual item.
  */
 static CmsTopn *
 CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
@@ -201,7 +201,7 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 	uint32 sketchDepth = 0;
 	Size staticStructSize = 0;
 	Size sketchSize = 0;
-	Size reservedSizeForItems = 0;
+	Size topnItemsReservedSize = 0;
 	Size topnArrayReservedSize = 0;
 	Size totalCmsTopnSize = 0;
 
@@ -228,8 +228,8 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 	sketchDepth = (uint32) ceil(log(1 / (1 - confidenceInterval)));
 	sketchSize =  sizeof(Frequency) * sketchDepth * sketchWidth;
 	staticStructSize = sizeof(CmsTopn);
-	reservedSizeForItems = topnItemCount * DEFAULT_TOPN_ITEM_SIZE;
-	topnArrayReservedSize = TOPN_ARRAY_OVERHEAD + reservedSizeForItems;
+	topnItemsReservedSize = topnItemCount * DEFAULT_TOPN_ITEM_SIZE;
+	topnArrayReservedSize = TOPN_ARRAY_OVERHEAD + topnItemsReservedSize;
 	totalCmsTopnSize = staticStructSize + sketchSize + topnArrayReservedSize;
 
 	cmsTopn = palloc0(totalCmsTopnSize);
@@ -248,7 +248,7 @@ CreateCmsTopn(int32 topnItemCount, float8 errorBound, float8 confidenceInterval)
 /*
  * cms_topn_add is a user-facing UDF which inserts new item to the given CmsTopn.
  * The first parameter is for the CmsTopn to add the new item and second is for
- * the new item.
+ * the new item. This function returns updated CmsTopn.
  */
 Datum
 cms_topn_add(PG_FUNCTION_ARGS)
@@ -256,8 +256,8 @@ cms_topn_add(PG_FUNCTION_ARGS)
 	CmsTopn *currentCmsTopn = NULL;
 	CmsTopn *updatedCmsTopn = NULL;
 	Datum newItem = 0;
-	Oid newItemType = InvalidOid;
 	TypeCacheEntry *newItemTypeCacheEntry = NULL;
+	Oid newItemType = InvalidOid;
 
 	/* check whether cms_topn is null */
 	if (PG_ARGISNULL(0))
@@ -275,6 +275,7 @@ cms_topn_add(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(currentCmsTopn);
 	}
 
+	/* get item type and check if it is valid */
 	newItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
 	if (newItemType == InvalidOid)
 	{
@@ -291,32 +292,35 @@ cms_topn_add(PG_FUNCTION_ARGS)
 
 
 /*
- * UpdateCmsTopn is helper function to add new item to cmsTopn structure. It first
- * adds the item to the sketch, calculates its frequency, then updates the top-n
+ * UpdateCmsTopn is a helper function to add new item to CmsTopn structure. It
+ * adds the item to the sketch, calculates its frequency, and updates the top-n
  * array. Finally it forms new CmsTopn from updated sketch and updated top-n array.
  */
 static CmsTopn *
-UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *newItemTypeCacheEntry)
+UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem,
+			  TypeCacheEntry *newItemTypeCacheEntry)
 {
 	CmsTopn *updatedCmsTopn = NULL;
 	ArrayType *currentTopnArray = NULL;
 	ArrayType *updatedTopnArray = NULL;
 	Datum detoastedItem = 0;
-	Oid itemType = newItemTypeCacheEntry->type_id;
+	Oid newItemType = newItemTypeCacheEntry->type_id;
+	Oid currentItemType = InvalidOid;
 	Frequency newItemFrequency = 0;
 	bool topnArrayUpdated = false;
 	Size currentTopnArrayLength = 0;
 
 	currentTopnArray = TopnArray(currentCmsTopn);
 	currentTopnArrayLength = ARR_DIMS(currentTopnArray)[0];
+	currentItemType = ARR_ELEMTYPE(currentTopnArray);
 
-	if (currentTopnArrayLength != 0 && itemType != ARR_ELEMTYPE(currentTopnArray))
+	if (currentTopnArrayLength != 0 && currentItemType != newItemType)
 	{
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						errmsg("not proper type for this cms_topn")));
 	}
 
-	/* make sure the datum is not toasted */
+	/* if datum is toasted, detoast it */
 	if (newItemTypeCacheEntry->typlen == -1)
 	{
 		detoastedItem = PointerGetDatum(PG_DETOAST_DATUM(newItem));
@@ -326,9 +330,13 @@ UpdateCmsTopn(CmsTopn *currentCmsTopn, Datum newItem, TypeCacheEntry *newItemTyp
 		detoastedItem = newItem;
 	}
 
-	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem, newItemTypeCacheEntry);
-	updatedTopnArray = UpdateTopnArray(currentCmsTopn, detoastedItem, newItemFrequency,
-									   newItemTypeCacheEntry, &topnArrayUpdated);
+	newItemFrequency = UpdateSketchInPlace(currentCmsTopn, detoastedItem,
+										   newItemTypeCacheEntry);
+	updatedTopnArray = UpdateTopnArray(currentCmsTopn, detoastedItem,
+									   newItemTypeCacheEntry, newItemFrequency,
+									   &topnArrayUpdated);
+
+	/* we only form a new CmsTopn only if top-n array is updated */
 	if (topnArrayUpdated)
 	{
 		updatedCmsTopn = FormCmsTopn(currentCmsTopn, updatedTopnArray);
@@ -350,7 +358,7 @@ static ArrayType *
 TopnArray(CmsTopn *cmsTopn)
 {
 	Size staticSize = sizeof(CmsTopn);
-	Size sketchSize = cmsTopn->sketchDepth * cmsTopn->sketchWidth * sizeof(Frequency);
+	Size sketchSize = sizeof(Frequency) * cmsTopn->sketchDepth * cmsTopn->sketchWidth;
 	Size sizeWithoutTopnArray = staticSize + sketchSize;
 	ArrayType *topnArray = (ArrayType *) (((char *) cmsTopn) + sizeWithoutTopnArray);
 
@@ -359,8 +367,8 @@ TopnArray(CmsTopn *cmsTopn)
 
 
 /*
- * UpdateSketchInPlace updates sketch in CmsTopn with given item in place and
- * returns new estimated frequency for the given item.
+ * UpdateSketchInPlace updates sketch inside CmsTopn in-place with given item
+ * and returns new estimated frequency for the given item.
  */
 static Frequency
 UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
@@ -372,9 +380,15 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
 	Frequency newFrequency = 0;
 	Frequency minFrequency = MAX_FREQUENCY;
 
+	/* get hashed values for the given item */
 	ConvertDatumToBytes(newItem, newItemTypeCacheEntry, newItemString);
 	MurmurHash3_x64_128(newItemString->data, newItemString->len, MURMUR_SEED,
 						&hashValueArray);
+
+	/*
+	 * Estimate frequency of the given item from hashed values and calculate new
+	 * frequency for this item.
+	 */
 	minFrequency = CmsTopnEstimateHashedItemFrequency(cmsTopn, hashValueArray);
 	newFrequency = minFrequency + 1;
 
@@ -382,17 +396,22 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
 	 * We can create an independent hash function for each index by using two hash
 	 * values from the Murmur Hash function. This is a standard technique from the
 	 * hashing literature for the additional hash functions of the form
-	 * g(x) = h1(x) + i * h2(x) and does not hurt the independence:
+	 * g(x) = h1(x) + i * h2(x) and does not hurt the independence between hash
+	 * function. For more information you can check this paper:
 	 * http://www.eecs.harvard.edu/~kirsch/pubs/bbbf/esa06.pdf
 	 */
 	for (hashIndex = 0; hashIndex < cmsTopn->sketchDepth; hashIndex++)
 	{
-		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;
 		uint64 hashValue = hashValueArray[0] + (hashIndex * hashValueArray[1]);
 		uint32 widthIndex = hashValue % cmsTopn->sketchWidth;
+		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;
 		uint32 counterIndex = depthOffset + widthIndex;
 
-		/* selective update to decrease effect of collisions */
+		/*
+		 * Selective update to decrease effect of collisions. We only update
+		 * counters less than new frequency because other counters are bigger
+		 * due to collisions.
+		 */
 		Frequency counterFrequency = cmsTopn->sketch[counterIndex];
 		if (newFrequency > counterFrequency)
 		{
@@ -405,7 +424,8 @@ UpdateSketchInPlace(CmsTopn *cmsTopn, Datum newItem,
 
 
 /*
- * ConvertDatumToBytes converts datum to its bytes according to its type
+ * ConvertDatumToBytes converts datum to byte array and saves it in the given
+ * datum string.
  */
 static void
 ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
@@ -413,11 +433,16 @@ ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
 {
 	int16 datumTypeLength = datumTypeCacheEntry->typlen;
 	bool datumTypeByValue = datumTypeCacheEntry->typbyval;
-	bool datumCompositeType = datumTypeCacheEntry->typtype != TYPTYPE_COMPOSITE;
+	bool datumCompositeType = FALSE;
 
-	if (datumTypeCacheEntry->type_id != RECORDOID && datumCompositeType)
+	if (datumTypeCacheEntry->typtype == TYPTYPE_COMPOSITE)
 	{
-		Size datumSize;
+		datumCompositeType = TRUE;
+	}
+
+	if (datumTypeCacheEntry->type_id != RECORDOID && !datumCompositeType)
+	{
+		Size datumSize = 0;
 
 		if (datumTypeLength == -1)
 		{
@@ -476,8 +501,8 @@ ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
 
 
 /*
- * CmsTopnEstimateHashedItemFrequency is a helper function to get frequency of
- * an item's hashed values.
+ * CmsTopnEstimateHashedItemFrequency is a helper function to get frequency
+ * estimate of an item from it's hashed values.
  */
 static Frequency
 CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn, uint64 *hashValueArray)
@@ -487,9 +512,9 @@ CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn, uint64 *hashValueArray)
 
 	for (hashIndex = 0; hashIndex < cmsTopn->sketchDepth; hashIndex++)
 	{
-		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;
 		uint64 hashValue = hashValueArray[0] + (hashIndex * hashValueArray[1]);
 		uint32 widthIndex = hashValue	% cmsTopn->sketchWidth;
+		uint32 depthOffset = hashIndex * cmsTopn->sketchWidth;
 		uint32 counterIndex = depthOffset + widthIndex;
 
 		Frequency counterFrequency = cmsTopn->sketch[counterIndex];
@@ -507,31 +532,32 @@ CmsTopnEstimateHashedItemFrequency(CmsTopn *cmsTopn, uint64 *hashValueArray)
  * UpdateTopnArray is a helper function for the unions and inserts. It takes
  * given item and its frequency. If the item is not in the top-n array, it tries
  * to insert new item. If there is place in the top-n array, it insert directly.
- * Otherwise, it compares its frequency with minimum of current items in the array
- * and updates top-n array if new frequency is bigger.
+ * Otherwise, it compares its frequency with the minimum of current items in the
+ * array and updates top-n array if new frequency is bigger.
  */
 static ArrayType *
-UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
-				TypeCacheEntry *itemTypeCacheEntry, bool *topnArrayUpdated)
+UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, TypeCacheEntry *itemTypeCacheEntry,
+				Frequency itemFrequency, bool *topnArrayUpdated)
 {
 	ArrayType *currentTopnArray = TopnArray(cmsTopn);
 	ArrayType *updatedTopnArray = NULL;
-	int candidateIndex = -1;
 	int16 itemTypeLength = itemTypeCacheEntry->typlen;
 	bool itemTypeByValue = itemTypeCacheEntry->typbyval;
 	char itemTypeAlignment = itemTypeCacheEntry->typalign;
-	int currentArrayLength = ARR_DIMS(currentTopnArray)[0];
 	Frequency minOfNewTopnItems = MAX_FREQUENCY;
 	bool candidateAlreadyInArray = false;
+	int candidateIndex = -1;
 
+	int currentArrayLength = ARR_DIMS(currentTopnArray)[0];
 	if (currentArrayLength == 0)
 	{
-		currentTopnArray = construct_empty_array(itemTypeCacheEntry->type_id);
+		Oid itemType = itemTypeCacheEntry->type_id;
+		currentTopnArray = construct_empty_array(itemType);
 	}
 
 	/*
 	 * If item frequency is smaller than min frequency of old top-n items,
-	 * it cannot be in the top-n items and we insert it if there is place.
+	 * it cannot be in the top-n items and we insert it only if there is place.
 	 * Otherwise, we need to check new minimum and whether it is in the top-n.
 	 */
 	if (itemFrequency <= cmsTopn->minFrequencyOfTopnItems)
@@ -547,31 +573,34 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
 		ArrayIterator iterator = array_create_iterator(currentTopnArray, 0);
 		Datum topnItem = 0;
 		int topnItemIndex = 1;
-		int minIndex = 1;
+		int minItemIndex = 1;
 		bool hasMoreItem = false;
 		bool isNull = false;
 
 		/*
 		 * Find the top-n item with minimum frequency to replace it with candidate
-		 * top-n item.
+		 * item.
 		 */
 		hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
 		while (hasMoreItem)
 		{
-			Frequency topnItemFrequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
-																	 itemTypeCacheEntry);
-			if (topnItemFrequency < minOfNewTopnItems)
-			{
-				minOfNewTopnItems = topnItemFrequency;
-				minIndex = topnItemIndex;
-			}
+			Frequency topnItemFrequency = 0;
 
+			/* check if we already have this item in top-n array */
 			candidateAlreadyInArray = datumIsEqual(topnItem, candidateItem,
 												   itemTypeByValue, itemTypeLength);
 			if (candidateAlreadyInArray)
 			{
-				minIndex = -1;
+				minItemIndex = -1;
 				break;
+			}
+
+			topnItemFrequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
+															 itemTypeCacheEntry);
+			if (topnItemFrequency < minOfNewTopnItems)
+			{
+				minOfNewTopnItems = topnItemFrequency;
+				minItemIndex = topnItemIndex;
 			}
 
 			hasMoreItem = array_iterate(iterator, &topnItem, &isNull);
@@ -581,11 +610,11 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, Frequency itemFrequency,
 		/* if new item is not in the top-n and there is place, insert the item */
 		if (!candidateAlreadyInArray && currentArrayLength < cmsTopn->topnItemCount)
 		{
-			minIndex = currentArrayLength + 1;
+			minItemIndex = currentArrayLength + 1;
 			minOfNewTopnItems = Min(minOfNewTopnItems, itemFrequency);
 		}
 
-		candidateIndex = minIndex;
+		candidateIndex = minItemIndex;
 	}
 
 	/*
@@ -915,8 +944,8 @@ CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
 
 			newItemFrequency = CmsTopnEstimateItemFrequency(firstCmsTopn, topnItem,
 															itemTypeCacheEntry);
-			newTopnArray = UpdateTopnArray(firstCmsTopn, topnItem, newItemFrequency,
-										   itemTypeCacheEntry, &topnArrayUpdated);
+			newTopnArray = UpdateTopnArray(firstCmsTopn, topnItem, itemTypeCacheEntry,
+										   newItemFrequency, &topnArrayUpdated);
 			if (topnArrayUpdated)
 			{
 				firstCmsTopn = FormCmsTopn(firstCmsTopn, newTopnArray);
