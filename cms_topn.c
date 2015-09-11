@@ -92,6 +92,7 @@ static Frequency CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item,
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray);
 static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
 							  TypeCacheEntry *itemTypeCacheEntry);
+void SortTopnItems(TopnItem *topnItemArray, Size topnArrayLength);
 
 
 /* declarations for dynamic loading */
@@ -1135,7 +1136,7 @@ topn(PG_FUNCTION_ARGS)
     Datum topnItem = 0;
     bool isNull = false;
     ArrayIterator topnIterator = NULL;
-    TopnItem *orderedTopn = NULL;
+    TopnItem *topnItemArray = NULL;
     bool hasMoreItem = false;
     int callCounter = 0;
     int maxCalls = 0;
@@ -1172,46 +1173,25 @@ topn(PG_FUNCTION_ARGS)
 
         	functionCallContext->max_calls = topnArrayLength;
         	topnArraySize = topnArrayLength * sizeof(TopnItem);
-        	orderedTopn = palloc0(topnArraySize);
+        	topnItemArray = palloc0(topnArraySize);
         	topnIterator = array_create_iterator(topnArray, 0);
         	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
     	}
 
-
     	while (hasMoreItem)
     	{
-    		TopnItem f;
+    		TopnItem itemWithFrequency;
 
-			f.item = topnItem;
-			f.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
-													   itemTypeCacheEntry);
-			orderedTopn[topnIndex] = f;
+			itemWithFrequency.item = topnItem;
+			itemWithFrequency.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
+													   	   	   	   	 itemTypeCacheEntry);
+			topnItemArray[topnIndex] = itemWithFrequency;
 			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
 			topnIndex++;
 		}
 
-		for (topnIndex = 0; topnIndex < topnArrayLength; topnIndex++)
-		{
-			Frequency max = orderedTopn[topnIndex].frequency;
-			TopnItem tmp;
-			int maxIndex = topnIndex;
-			int j = 0;
-
-			for (j = topnIndex + 1; j < topnArrayLength; j++)
-			{
-				if(orderedTopn[j].frequency > max)
-				{
-					max = orderedTopn[j].frequency;
-					maxIndex = j;
-				}
-			}
-
-			tmp = orderedTopn[maxIndex];
-			orderedTopn[maxIndex] = orderedTopn[topnIndex];
-			orderedTopn[topnIndex] = tmp;
-		}
-
-		functionCallContext->user_fctx = orderedTopn;
+    	SortTopnItems(topnItemArray, topnArrayLength);
+		functionCallContext->user_fctx = topnItemArray;
 		get_call_result_type(fcinfo, &returningItemId, &tupleDescriptor);
 
 		completeDescriptor = BlessTupleDesc(tupleDescriptor);
@@ -1223,17 +1203,17 @@ topn(PG_FUNCTION_ARGS)
     callCounter = functionCallContext->call_cntr;
     maxCalls = functionCallContext->max_calls;
     completeDescriptor = functionCallContext->tuple_desc;
-    orderedTopn = (TopnItem *) functionCallContext->user_fctx;
+    topnItemArray = (TopnItem *) functionCallContext->user_fctx;
 
     if (callCounter < maxCalls)
     {
-    	Datum       *values = (Datum *) palloc(2*sizeof(Datum));
-    	HeapTuple    tuple;
-    	Datum        result = 0;
+    	Datum *values = (Datum *) palloc(2*sizeof(Datum));
+    	HeapTuple tuple;
+    	Datum result = 0;
     	char *nulls = palloc0(2*sizeof(char));
 
-    	values[0] = orderedTopn[callCounter].item;
-    	values[1] = orderedTopn[callCounter].frequency;
+    	values[0] = topnItemArray[callCounter].item;
+    	values[1] = topnItemArray[callCounter].frequency;
     	tuple = heap_formtuple(completeDescriptor, values,nulls);
     	result = HeapTupleGetDatum(tuple);
     	SRF_RETURN_NEXT(functionCallContext, result);
@@ -1242,4 +1222,36 @@ topn(PG_FUNCTION_ARGS)
     {
     	SRF_RETURN_DONE(functionCallContext);
     }
+}
+
+
+/*
+ * SortTopnItems sorts the top-n items according to their frequencies by using
+ * selection sort.
+ */
+void
+SortTopnItems(TopnItem *topnItemArray, Size topnArrayLength)
+{
+	int topnIndex = 0;
+
+	for (topnIndex = 0; topnIndex < topnArrayLength; topnIndex++)
+	{
+		Frequency max = topnItemArray[topnIndex].frequency;
+		TopnItem tmp;
+		int maxIndex = topnIndex;
+		int j = 0;
+
+		for (j = topnIndex + 1; j < topnArrayLength; j++)
+		{
+			if(topnItemArray[j].frequency > max)
+			{
+				max = topnItemArray[j].frequency;
+				maxIndex = j;
+			}
+		}
+
+		tmp = topnItemArray[maxIndex];
+		topnItemArray[maxIndex] = topnItemArray[topnIndex];
+		topnItemArray[topnIndex] = tmp;
+	}
 }
