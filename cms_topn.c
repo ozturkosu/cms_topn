@@ -434,69 +434,24 @@ ConvertDatumToBytes(Datum datum, TypeCacheEntry *datumTypeCacheEntry,
 {
 	int16 datumTypeLength = datumTypeCacheEntry->typlen;
 	bool datumTypeByValue = datumTypeCacheEntry->typbyval;
-	bool datumCompositeType = FALSE;
+	Size datumSize = 0;
 
-	if (datumTypeCacheEntry->typtype == TYPTYPE_COMPOSITE)
+	if (datumTypeLength == -1)
 	{
-		datumCompositeType = TRUE;
-	}
-
-	if (datumTypeCacheEntry->type_id != RECORDOID && !datumCompositeType)
-	{
-		Size datumSize = 0;
-
-		if (datumTypeLength == -1)
-		{
-			datumSize = VARSIZE_ANY_EXHDR(DatumGetPointer(datum));
-		}
-		else
-		{
-			datumSize = datumGetSize(datum, datumTypeByValue, datumTypeLength);
-		}
-
-		if (datumTypeByValue)
-		{
-			appendBinaryStringInfo(datumString, (char *) &datum, datumSize);
-		}
-		else
-		{
-			appendBinaryStringInfo(datumString, VARDATA_ANY(datum), datumSize);
-		}
+		datumSize = VARSIZE_ANY_EXHDR(DatumGetPointer(datum));
 	}
 	else
 	{
-		/* For composite types, we need to serialize all attributes */
-		HeapTupleHeader compositeHeader = DatumGetHeapTupleHeader(datum);
-		Oid compositeId = HeapTupleHeaderGetTypeId(compositeHeader);
-		int32 compositeMode = HeapTupleHeaderGetTypMod(compositeHeader);
-		TupleDesc compositeDescriptor = lookup_rowtype_tupdesc_copy(compositeId,
-																	compositeMode);
-		Form_pg_attribute *attributes = compositeDescriptor->attrs;
-		TypeCacheEntry *attributeCacheEntry = NULL;
-		int attributeCount = compositeDescriptor->natts;
-		int attributeIndex = 0;
-		HeapTupleData temporaryTuple;
+		datumSize = datumGetSize(datum, datumTypeByValue, datumTypeLength);
+	}
 
-		temporaryTuple.t_len = HeapTupleHeaderGetDatumLength(compositeHeader);
-		temporaryTuple.t_data = compositeHeader;
-
-		for (attributeIndex = 0; attributeIndex < attributeCount; attributeIndex++)
-		{
-			Form_pg_attribute attribute = attributes[attributeIndex];
-			bool isNull = false;
-			Datum temporaryDatum = heap_getattr(&temporaryTuple, attributeIndex + 1,
-												compositeDescriptor, &isNull);
-
-			if (isNull)
-			{
-				appendStringInfoChar(datumString, '0');
-				continue;
-			}
-
-			appendStringInfoChar(datumString, '1');
-			attributeCacheEntry = lookup_type_cache(attribute->atttypid, 0);
-			ConvertDatumToBytes(temporaryDatum, attributeCacheEntry, datumString);
-		}
+	if (datumTypeByValue)
+	{
+		appendBinaryStringInfo(datumString, (char *) &datum, datumSize);
+	}
+	else
+	{
+		appendBinaryStringInfo(datumString, VARDATA_ANY(datum), datumSize);
 	}
 }
 
@@ -553,6 +508,13 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, TypeCacheEntry *itemTypeC
 	if (currentArrayLength == 0)
 	{
 		Oid itemType = itemTypeCacheEntry->type_id;
+
+		if (itemTypeCacheEntry->typtype == TYPTYPE_COMPOSITE)
+		{
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+									errmsg("composite types are not supported")));
+		}
+
 		currentTopnArray = construct_empty_array(itemType);
 	}
 
