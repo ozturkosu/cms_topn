@@ -5,6 +5,10 @@
 --check null cms_topn
 SELECT cms_topn_add(NULL, 5);
 
+--check composite types
+create type composite_type as ( a int, b text);
+select cms_topn_add(cms_topn(2), (3,'cms_topn')::composite_type);
+
 --check null new item for different type of elements
 CREATE TABLE add_test (
 	cms_topn_column cms_topn

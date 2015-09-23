@@ -17,7 +17,7 @@ SELECT topn(cms_topn(2), NULL::text);
 
 --check with wrong parameters
 SELECT topn(cms_topn_add(cms_topn(2),2),NULL::text);
-ERROR:  not proper cms_topn for the result type
+ERROR:  not a proper cms_topn for the result type
 --cms_topn_info
 --check with null and empty values
 SELECT cms_topn_info(NULL);
