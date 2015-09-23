@@ -62,14 +62,15 @@ typedef struct CmsTopn
 } CmsTopn;
 
 /*
- * TopnItem is the struct to keep frequent items and their frequencies together.
+ * FrequentTopnItem is the struct to keep frequent items and their frequencies
+ * together.
  * It is useful to sort the top-n items before returning in topn() function.
  */
-typedef struct TopnItem
+typedef struct FrequentTopnItem
 {
-	Datum item;
-	Frequency frequency;
-} TopnItem;
+	Datum topnItem;
+	Frequency topnItemFrequency;
+} FrequentTopnItem;
 
 
 /* local functions forward declarations */
@@ -92,7 +93,7 @@ static Frequency CmsTopnEstimateItemFrequency(CmsTopn *cmsTopn, Datum item,
 static CmsTopn * FormCmsTopn(CmsTopn *cmsTopn, ArrayType *newTopnArray);
 static CmsTopn * CmsTopnUnion(CmsTopn *firstCmsTopn, CmsTopn *secondCmsTopn,
 							  TypeCacheEntry *itemTypeCacheEntry);
-void SortTopnItems(TopnItem *topnItemArray, Size topnArrayLength);
+void SortTopnItems(FrequentTopnItem *topnItemArray, int topnItemCount);
 
 
 /* declarations for dynamic loading */
@@ -508,11 +509,10 @@ UpdateTopnArray(CmsTopn *cmsTopn, Datum candidateItem, TypeCacheEntry *itemTypeC
 	if (currentArrayLength == 0)
 	{
 		Oid itemType = itemTypeCacheEntry->type_id;
-
 		if (itemTypeCacheEntry->typtype == TYPTYPE_COMPOSITE)
 		{
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-									errmsg("composite types are not supported")));
+							errmsg("composite types are not supported")));
 		}
 
 		currentTopnArray = construct_empty_array(itemType);
@@ -1080,36 +1080,36 @@ cms_topn_info(PG_FUNCTION_ARGS)
 /*
  * topn is a user-facing UDF which returns the top items and their frequencies.
  * It first gets the top-n structure and converts it into the ordered array of
- * TopnItem which keeps Datums and the frequencies in the first call. Then, it
- * returns an item and its frequency according to call counter. This function
- * requires a parameter for the type because PostgreSQL has strongly typed
- * system and the type of frequent items in returning rows has to be given.
+ * FrequentTopnItem which keeps Datums and the frequencies in the first call.
+ * Then, it returns an item and its frequency according to call counter. This
+ * function requires a parameter for the type because PostgreSQL has strongly
+ * typed system and the type of frequent items in returning rows has to be given.
  */
 Datum
 topn(PG_FUNCTION_ARGS)
 {
     FuncCallContext *functionCallContext = NULL;
     TupleDesc tupleDescriptor = NULL;
-    TupleDesc completeDescriptor = NULL;
-	Oid returningItemId = get_fn_expr_argtype(fcinfo->flinfo, 1);
+	Oid returningItemType = get_fn_expr_argtype(fcinfo->flinfo, 1);
     CmsTopn *cmsTopn = NULL;
     ArrayType *topnArray = NULL;
-    Size topnArrayLength = 0;
+    int topnArrayLength = 0;
     Datum topnItem = 0;
     bool isNull = false;
     ArrayIterator topnIterator = NULL;
-    TopnItem *topnItemArray = NULL;
     bool hasMoreItem = false;
     int callCounter = 0;
-    int maxCalls = 0;
+    int maxCallCounter = 0;
 
     if (SRF_IS_FIRSTCALL())
     {
     	MemoryContext oldcontext = NULL;
     	Size topnArraySize = 0;
-    	Oid itemType = 0;
     	TypeCacheEntry *itemTypeCacheEntry = NULL;
     	int topnIndex = 0;
+    	Oid itemType = InvalidOid;
+        FrequentTopnItem *sortedTopnArray = NULL;
+        TupleDesc completeTupleDescriptor = NULL;
 
     	functionCallContext = SRF_FIRSTCALL_INIT();
     	oldcontext = MemoryContextSwitchTo(functionCallContext->multi_call_memory_ctx);
@@ -1123,62 +1123,74 @@ topn(PG_FUNCTION_ARGS)
     	topnArray = TopnArray(cmsTopn);
     	topnArrayLength = ARR_DIMS(topnArray)[0];
 
-    	if (topnArrayLength != 0)
+    	/* if there is not any element in the array just return */
+    	if (topnArrayLength == 0)
     	{
-    		itemType = ARR_ELEMTYPE(topnArray);
-    		itemTypeCacheEntry = lookup_type_cache(itemType, 0);
-
-        	if (itemType != returningItemId)
-        	{
-        		elog(ERROR, "not proper cms_topn for the result type");
-        	}
-
-        	functionCallContext->max_calls = topnArrayLength;
-        	topnArraySize = topnArrayLength * sizeof(TopnItem);
-        	topnItemArray = palloc0(topnArraySize);
-        	topnIterator = array_create_iterator(topnArray, 0);
-        	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+    		SRF_RETURN_DONE(functionCallContext);
     	}
 
+    	itemType = ARR_ELEMTYPE(topnArray);
+    	if (itemType != returningItemType)
+        {
+    		elog(ERROR, "not a proper cms_topn for the result type");
+        }
+
+    	itemTypeCacheEntry = lookup_type_cache(itemType, 0);
+    	functionCallContext->max_calls = topnArrayLength;
+
+    	/* create an array to copy top-n items and sort them later */
+    	topnArraySize = sizeof(FrequentTopnItem) * topnArrayLength;
+    	sortedTopnArray = palloc0(topnArraySize);
+
+    	topnIterator = array_create_iterator(topnArray, 0);
+    	hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
     	while (hasMoreItem)
     	{
-    		TopnItem itemWithFrequency;
+    		FrequentTopnItem frequentTopnItem;
+    		frequentTopnItem.topnItem = topnItem;
+    		frequentTopnItem.topnItemFrequency =
+    				CmsTopnEstimateItemFrequency(cmsTopn, topnItem, itemTypeCacheEntry);
+    		sortedTopnArray[topnIndex] = frequentTopnItem;
 
-			itemWithFrequency.item = topnItem;
-			itemWithFrequency.frequency = CmsTopnEstimateItemFrequency(cmsTopn, topnItem,
-													   	   	   	   	 itemTypeCacheEntry);
-			topnItemArray[topnIndex] = itemWithFrequency;
-			hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
-			topnIndex++;
-		}
+    		hasMoreItem = array_iterate(topnIterator, &topnItem, &isNull);
+    		topnIndex++;
+    	}
 
-    	SortTopnItems(topnItemArray, topnArrayLength);
-		functionCallContext->user_fctx = topnItemArray;
-		get_call_result_type(fcinfo, &returningItemId, &tupleDescriptor);
+    	SortTopnItems(sortedTopnArray, topnArrayLength);
+		functionCallContext->user_fctx = sortedTopnArray;
 
-		completeDescriptor = BlessTupleDesc(tupleDescriptor);
-		functionCallContext->tuple_desc = completeDescriptor;
+		get_call_result_type(fcinfo, &returningItemType, &tupleDescriptor);
+		completeTupleDescriptor = BlessTupleDesc(tupleDescriptor);
+		functionCallContext->tuple_desc = completeTupleDescriptor;
 		MemoryContextSwitchTo(oldcontext);
     }
 
     functionCallContext = SRF_PERCALL_SETUP();
+    maxCallCounter = functionCallContext->max_calls;
     callCounter = functionCallContext->call_cntr;
-    maxCalls = functionCallContext->max_calls;
-    completeDescriptor = functionCallContext->tuple_desc;
-    topnItemArray = (TopnItem *) functionCallContext->user_fctx;
 
-    if (callCounter < maxCalls)
+    if (callCounter < maxCallCounter)
     {
-    	Datum *values = (Datum *) palloc(2*sizeof(Datum));
-    	HeapTuple tuple;
-    	Datum result = 0;
-    	char *nulls = palloc0(2*sizeof(char));
+    	Datum *tupleValues = (Datum *) palloc(2 * sizeof(Datum));
+    	HeapTuple topnItemTuple;
+    	Datum topnItemDatum = 0;
+    	char *tupleNulls = (char *) palloc0(2 * sizeof(char));
+        FrequentTopnItem *sortedTopnArray = NULL;
+        TupleDesc completeTupleDescriptor = NULL;
 
-    	values[0] = topnItemArray[callCounter].item;
-    	values[1] = topnItemArray[callCounter].frequency;
-    	tuple = heap_formtuple(completeDescriptor, values,nulls);
-    	result = HeapTupleGetDatum(tuple);
-    	SRF_RETURN_NEXT(functionCallContext, result);
+        sortedTopnArray = (FrequentTopnItem *) functionCallContext->user_fctx;
+    	tupleValues[0] = sortedTopnArray[callCounter].topnItem;
+    	tupleValues[1] = sortedTopnArray[callCounter].topnItemFrequency;
+
+    	/* non-null attributes are indicated by a ' ' (space) */
+    	tupleNulls[0] = ' ';
+    	tupleNulls[1] = ' ';
+
+        completeTupleDescriptor = functionCallContext->tuple_desc;
+    	topnItemTuple = heap_formtuple(completeTupleDescriptor, tupleValues, tupleNulls);
+
+    	topnItemDatum = HeapTupleGetDatum(topnItemTuple);
+    	SRF_RETURN_NEXT(functionCallContext, topnItemDatum);
     }
     else
     {
@@ -1188,32 +1200,36 @@ topn(PG_FUNCTION_ARGS)
 
 
 /*
- * SortTopnItems sorts the top-n items according to their frequencies by using
- * selection sort.
+ * SortTopnItems sorts the top-n items in place according to their frequencies
+ * by using selection sort.
  */
 void
-SortTopnItems(TopnItem *topnItemArray, Size topnArrayLength)
+SortTopnItems(FrequentTopnItem *topnItemArray, int topnItemCount)
 {
-	int topnIndex = 0;
-
-	for (topnIndex = 0; topnIndex < topnArrayLength; topnIndex++)
+	int currentItemIndex = 0;
+	for (currentItemIndex = 0; currentItemIndex < topnItemCount; currentItemIndex++)
 	{
-		Frequency max = topnItemArray[topnIndex].frequency;
-		TopnItem tmp;
-		int maxIndex = topnIndex;
-		int j = 0;
+		FrequentTopnItem swapFrequentTopnItem;
+		int candidateItemIndex = 0;
 
-		for (j = topnIndex + 1; j < topnArrayLength; j++)
+		/* use current top-n item as default max */
+		Frequency maxItemFrequency = topnItemArray[currentItemIndex].topnItemFrequency;
+		int maxItemIndex = currentItemIndex;
+
+		for (candidateItemIndex = currentItemIndex + 1;
+				candidateItemIndex < topnItemCount; candidateItemIndex++)
 		{
-			if(topnItemArray[j].frequency > max)
+			Frequency candidateItemFrequency =
+					topnItemArray[candidateItemIndex].topnItemFrequency;
+			if(candidateItemFrequency > maxItemFrequency)
 			{
-				max = topnItemArray[j].frequency;
-				maxIndex = j;
+				maxItemFrequency = candidateItemFrequency;
+				maxItemIndex = candidateItemIndex;
 			}
 		}
 
-		tmp = topnItemArray[maxIndex];
-		topnItemArray[maxIndex] = topnItemArray[topnIndex];
-		topnItemArray[topnIndex] = tmp;
+		swapFrequentTopnItem = topnItemArray[maxItemIndex];
+		topnItemArray[maxItemIndex] = topnItemArray[currentItemIndex];
+		topnItemArray[currentItemIndex] = swapFrequentTopnItem;
 	}
 }
