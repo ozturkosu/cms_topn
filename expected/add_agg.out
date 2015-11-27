@@ -39,8 +39,7 @@ HINT:  Confidence interval has to be between 0 and 1
 SELECT topn(cms_topn_add_agg(int_column, 3), NULL::integer) FROM numbers WHERE int_column < 0;
  topn 
 ------
- 
-(1 row)
+(0 rows)
 
 SELECT topn(cms_topn_add_agg(int_column, 3), NULL::integer) FROM numbers WHERE int_column < 1;
   topn   
@@ -105,8 +104,7 @@ SELECT cms_topn_info(cms_topn_add_agg(int_column, 3)) FROM numbers;
 SELECT topn(cms_topn_add_agg(text_column, 4, 0.01, 0.09), NULL::text) FROM strings WHERE text_column < '0';
  topn 
 ------
- 
-(1 row)
+(0 rows)
 
 SELECT topn(cms_topn_add_agg(text_column, 4, 0.01, 0.09), NULL::text) FROM strings WHERE text_column < '1';
  topn  

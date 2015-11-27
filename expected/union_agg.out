@@ -9,15 +9,13 @@ INSERT INTO union_agg VALUES(NULL);
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
  topn 
 ------
- 
-(1 row)
+(0 rows)
 
 INSERT INTO union_agg VALUES(NULL);
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;
  topn 
 ------
- 
-(1 row)
+(0 rows)
 
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(int_column, 2) FROM numbers WHERE int_column = 0;
 SELECT topn(cms_topn_union_agg(cms_topn_column), NULL::integer) from union_agg;

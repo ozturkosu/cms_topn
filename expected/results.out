@@ -7,8 +7,7 @@
 SELECT topn(NULL, NULL::integer);
  topn 
 ------
- 
-(1 row)
+(0 rows)
 
 SELECT topn(cms_topn(2), NULL::text);
  topn 

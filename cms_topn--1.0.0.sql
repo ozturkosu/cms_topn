@@ -85,7 +85,7 @@ CREATE FUNCTION cms_topn_info(cms_topn)
 	AS 'MODULE_PATHNAME'
 	LANGUAGE C STRICT IMMUTABLE;
 
-CREATE OR REPLACE FUNCTION topn(cms_topn, anyelement) 
+CREATE FUNCTION topn(cms_topn, anyelement) 
     RETURNS TABLE(item anyelement, frequency bigint)
     AS 'MODULE_PATHNAME'
     LANGUAGE C IMMUTABLE;
