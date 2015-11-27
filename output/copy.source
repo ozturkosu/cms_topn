@@ -14,8 +14,7 @@ SELECT topn(cms_topn_column, NULL::integer) FROM union_agg;
  (3,3)
  (4,40000)
  (5,6000)
- 
-(7 rows)
+(6 rows)
 
 DELETE FROM union_agg;
 INSERT INTO union_agg(cms_topn_column) SELECT cms_topn_add_agg(text_column, 3) FROM strings;

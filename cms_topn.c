@@ -1112,11 +1112,9 @@ topn(PG_FUNCTION_ARGS)
         TupleDesc completeTupleDescriptor = NULL;
 
     	functionCallContext = SRF_FIRSTCALL_INIT();
-    	oldcontext = MemoryContextSwitchTo(functionCallContext->multi_call_memory_ctx);
-
     	if (PG_ARGISNULL(0))
     	{
-    		PG_RETURN_NULL();
+    		SRF_RETURN_DONE(functionCallContext);
     	}
 
     	cmsTopn = (CmsTopn *)  PG_GETARG_VARLENA_P(0);
@@ -1135,6 +1133,8 @@ topn(PG_FUNCTION_ARGS)
     		elog(ERROR, "not a proper cms_topn for the result type");
         }
 
+    	/* switch to consistent context for multiple calls */
+    	oldcontext = MemoryContextSwitchTo(functionCallContext->multi_call_memory_ctx);
     	itemTypeCacheEntry = lookup_type_cache(itemType, 0);
     	functionCallContext->max_calls = topnArrayLength;
 
