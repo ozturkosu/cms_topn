@@ -27,8 +27,8 @@ We provide user defined Postgres types and functions with the extension:
 User defined PostgreSQL type to keep the count-min sketch structure and the top-n list.
 
 ##Function to create empty cms_topn structure
-######cms_topn(any type, integer n, double precision errorBound default 0.001, double precision confidenceInterval default 0.99)
-This creates empty cms_topn type for the given type(integer, text etc.). It has parameters for the precision and top-n count. Second parameter specifies top-n count. Third parameter specifies error bound for the approximation of the frequencies and the fourth one specifies confidence of the error bound. Size of the sketch is determined with the given error bound and confidence interval according to formula in this paper: http://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf. Such as these default values give us an error bound of 0.1% with a confidence of 99% and the created sketch has 5 rows and 2719 columns. Smaller error bound and higher confidence interval require bigger number of columns and rows, respectively. Size informaton of a created sketch can be seen with cms_topn_info function.
+######cms_topn(integer n, double precision errorBound default 0.001, double precision confidenceInterval default 0.99)
+This creates empty cms_topn type. It has parameters for the precision and top-n count. The first parameter specifies top-n count. The second parameter specifies error bound for the approximation of the frequencies and the third one specifies confidence of the error bound. Size of the sketch is determined with the given error bound and confidence interval according to formula in this paper: http://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf. Such as these default values give us an error bound of 0.1% with a confidence of 99% and the created sketch has 5 rows and 2719 columns. Smaller error bound and higher confidence interval require bigger number of columns and rows, respectively. Size informaton of a created sketch can be seen with cms_topn_info function.
 
 ##Functions to insert items
 ######cms_topn_add(cms_topn, value) 
